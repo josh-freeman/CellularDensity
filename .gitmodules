@@ -1,3 +1,3 @@
 [submodule "backend/models/hover_net"]
 	path = backend/models/hover_net
-	url = https://github.com/vqdang/hover_net
+	url = https://github.com/josh-freeman/hover_net
