@@ -17,6 +17,9 @@ import torch
 import torch.nn.functional as F
 import cv2
 from skimage.measure import label, regionprops
+import tempfile
+import os
+import json
 
 app = Flask(__name__)
 
@@ -32,68 +35,63 @@ def segment_image():
     if not file:
         return jsonify({"error": "No file found"}), 400
 
-    # 2. Load the image (PIL)
-    img_bytes = file.read()
-    img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
+    # Create a temporary directory
+    temp_dir_in = tempfile.mkdtemp()
+    temp_dir_out = tempfile.mkdtemp()
+    NR_TYPES = 6
+    type_info_path = 'type_info.json'
+    infer_command = f"""python run_infer.py \
+            --gpu='0,1,2' \
+            --nr_types={NR_TYPES} \
+            --type_info_path={type_info_path} \
+            --batch_size=64 \
+            --model_mode=fast \
+            --model_path=../pretrained/hovernet_fast_pannuke_type_tf2pytorch.tar \
+            --nr_inference_workers=8 \
+            --nr_post_proc_workers=16 \
+            tile \
+            --input_dir={temp_dir_in} \
+            --output_dir={temp_dir_out} \
+            --mem_usage=0.6 \
+            --draw_dot 
+    """
+    # Save the image to the input directory
+    file.save(os.path.join(temp_dir_in, file.filename))
+    
+    # run the inference from models/hover_net
+    os.chdir('models/hover_net')
+    os.system(infer_command)
+    os.chdir('../..')
 
-    # Convert to numpy array (H,W,3)
-    img_np = np.array(img)
+    # get the image overlay from temp_dir_out/overlay (replace the extension with .png). 
+    name_with_extension = file.filename.split('.')
+    overlay_path = os.path.join(temp_dir_out, 'overlay', name_with_extension[0] + '.png')
+    overlay_img = Image.open(overlay_path)
+    img_byte_array = io.BytesIO()
+    overlay_img.save(img_byte_array, format='PNG')
+    img_byte_array = img_byte_array.getvalue()
+    img_base64 = base64.b64encode(img_byte_array).decode('utf-8')
+    # get cell_type_count_table from temp_dir_out/json (replace the extension with .json)
+    json_path = os.path.join(temp_dir_out, 'json', name_with_extension[0] + '.json')
+    
+    with open(json_path, 'r') as json_file:
+        data = json.load(json_file)
 
-    # 3. Convert to grayscale
-    gray = img.convert('L')
-    gray_np = np.array(gray)
-
-    # 4. Move the grayscale image to the GPU as a PyTorch tensor
-    #    shape: (1, 1, H, W) so we can do operations easily
-    gray_tensor = torch.from_numpy(gray_np).float().unsqueeze(0).unsqueeze(0)
-    if torch.cuda.is_available():
-        gray_tensor = gray_tensor.cuda()
-
-    # Example threshold (static or Otsu). Let's do a simple static threshold of 128
-    # For something more dynamic, you could implement Otsu or another method on GPU as well.
-    threshold_value = 128.0
-    # Binarize on GPU
-    # result is 1 where gray > threshold, else 0
-    binary_tensor = (gray_tensor > threshold_value).float()
-
-    # 5. Convert the GPU result back to CPU numpy array, shape (H, W)
-    binary_mask = binary_tensor.squeeze().detach().cpu().numpy().astype(np.uint8)
-
-    # Optionally scale mask to 0/255 for visualization as a black/white image
-    binary_mask_255 = binary_mask * 255
-
-    # 6. Identify connected components (nuclei) with scikit-image
-    #    Each connected component (nucleus) will get its own label
-    labeled_mask = label(binary_mask, connectivity=2)  # connectivity=2 -> 8-connected
-
-    # 7. Measure properties of each labeled region (like centroid, area, bounding boxes, etc.)
-    props = regionprops(labeled_mask)
-
-    # 8. Draw circles around each detected nucleus on the original color image
-    #    We'll convert the original image to BGR format for OpenCV drawing
-    circled_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-    for region in props:
-        # region.centroid -> (y, x)
-        y, x = region.centroid
-        # radius -> half of equivalent diameter (or you can use bounding box size)
-        radius = int(region.equivalent_diameter / 2)
-
-        # Draw a circle in green color
-        # Make sure you cast x,y to int
-        cv2.circle(circled_img, (int(x), int(y)), radius, (0, 255, 0), 2)
-
-    # Convert back to RGB for Pillow
-    circled_img_rgb = cv2.cvtColor(circled_img, cv2.COLOR_BGR2RGB)
-    circled_pil = Image.fromarray(circled_img_rgb)
-
-    # 9. Encode the circled image as base64 string
-    img_buffer = io.BytesIO()
-    circled_pil.save(img_buffer, format='PNG')
-    img_buffer.seek(0)
-    img_base64 = base64.b64encode(img_buffer.read()).decode('utf-8')
-
+    cell_type_count_table = [{"count":0} for _ in range(NR_TYPES)]
+    for i in range(1, len(data["nuc"]) + 1):
+        cell_type = data["nuc"][str(i)]["type"]
+        cell_type_count_table[int(cell_type)] = {"count": cell_type_count_table[int(cell_type)]["count"] + 1}
+    
+    # Open the type info file and read its contents
+    with open(os.path.join('models/hover_net', type_info_path), 'r') as type_info_file:
+        type_info = json.load(type_info_file)
+        for key, value in enumerate(cell_type_count_table):
+            if value:
+                cell_type_count_table[key]['name'] = type_info[str(key)][0]
+                cell_type_count_table[key]['color'] = type_info[str(key)][1]
+    
     # 10. Return the base64 string in a JSON response
-    return jsonify({"segmented_image": img_base64})
+    return jsonify({"segmented_image": img_base64, "cell_type_count_table": cell_type_count_table})
 
 if __name__ == '__main__':
     # Typically in dev you'd run: flask run
