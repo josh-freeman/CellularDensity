@@ -41,10 +41,10 @@ def segment_image():
     NR_TYPES = 6
     type_info_path = 'type_info.json'
     infer_command = f"""python run_infer.py \
-            --gpu='0,1,2' \
+            --gpu='mps' \
             --nr_types={NR_TYPES} \
             --type_info_path={type_info_path} \
-            --batch_size=64 \
+            --batch_size=8 \
             --model_mode=fast \
             --model_path=../pretrained/hovernet_fast_pannuke_type_tf2pytorch.tar \
             --nr_inference_workers=8 \
