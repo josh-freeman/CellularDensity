@@ -30,10 +30,13 @@ function App() {
       }
 
       const data = await response.json();
+      console.log(data);
       if (data.segmented_image) {
         setSegmentedImage(data.segmented_image);
       }
-      if (Array.isArray(data.cell_type_count_table)) {
+      if (data.total_cell_count) {
+        setCellTypeCountTable([{ name: 'Nuclei', color: [0, 0, 0], count: data.total_cell_count }]);
+      } else if (Array.isArray(data.cell_type_count_table)) {
         setCellTypeCountTable(data.cell_type_count_table);
       } else {
         setCellTypeCountTable([]);

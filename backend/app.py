@@ -1,80 +1,73 @@
+from disjoint_set import DisjointSet
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
 from PIL import Image
 import io
 import base64
+from utils import preprocess_image, get_mask, get_map_white_pixels_to_respresentatives, calculate_and_save_histogram_and_return_R_cutoff
+
+app = Flask(__name__)
+CORS(app)
 
 import cv2
 
-# StarDist imports (example for TensorFlow variant)
-from stardist.models import StarDist2D
-from stardist.plot import render_label
-
-app = Flask(__name__)
-CORS(app)  # Enable CORS if front-end is on a different port
-
-# Load the StarDist model once (e.g., at startup).
-# Example uses the publicly available "2D_versatile_fluo" model.
-model = StarDist2D.from_pretrained("2D_versatile_fluo")
-
 @app.route('/segment', methods=['POST'])
 def segment_image():
-    """
-    Receive an image file, perform StarDist nucleus segmentation (YXC),
-    and return the overlay (with outlines) in base64 format plus a count.
-    """
-
     # 1. Get the file from the request
     file = request.files.get('image', None)
     if not file:
         return jsonify({"error": "No file found"}), 400
+    
+    gray_array, image = preprocess_image(file)
+    mask = get_mask(gray_array)
+    img = Image.fromarray(mask)
+    kernel = np.ones((3,3), np.uint8)
+    mask = cv2.dilate(mask, kernel, iterations=2)
 
-    # 2. Read the image via Pillow
-    image_pil = Image.open(file)
+    zones = get_map_white_pixels_to_respresentatives(mask) # list of lists of (x, y) coordinates
+    original_image = np.array(image)
+    
+    rpb_thresh = calculate_and_save_histogram_and_return_R_cutoff(50, original_image, zones)
 
-    # 3. Convert to float32 (grayscale), shape = (Y, X)
-    gray_pil = image_pil.convert('L')
-    image_array = np.array(gray_pil, dtype=np.float32) / 255.0
+    # make a new mask with only the pixels that have R+B > rpb_thresh
+    new_mask = np.zeros_like(mask)
+    unfiltered_zones_count = 0
+    for zone in zones:
+        total_rpb = 0
+        for x, y in zone:
+            total_rpb += np.int64(original_image[x, y, 0])
+        avg_rpb = total_rpb // len(zone)
 
-    # 4. Expand dimensions to shape (Y, X, 1)
-    #    Now StarDist sees Y (height), X (width), and C=1 channel
-    image_array = np.expand_dims(image_array, axis=-1)  # shape = (Y, X, 1)
+        if avg_rpb <= rpb_thresh:
+            unfiltered_zones_count += 1
+            for x, y in zone:
+                new_mask[x, y] = 255
 
-    # 5. Run StarDist with axes='YXC'
-    labels, details = model.predict_instances(image_array, axes='YXC')
-    print(details)
 
-    # 6. Count how many nuclei
-    num_nuclei = int(labels.max()) if labels is not None else 0
 
-    # 7. Create an overlay for visualization
-    #    Since 'image_array' is (Y, X, 1), replicate it into 3 channels for color display
-    image_3c = np.repeat(image_array, 3, axis=-1)  # shape = (Y, X, 3)
+    img = Image.fromarray(new_mask)
+    # Overlay the white parts of the mask on the original image with a transparent alpha in yellow
+    overlay = np.array(original_image, dtype=np.uint8)
+    yellow = [255, 255, 0]  # RGB for yellow
+    alpha = 0.5  # Transparency level
 
-    # Render label outlines (returns an RGB overlay)
-    label_rgb = render_label(labels, img=image_3c)
+    for x in range(mask.shape[0]):
+        for y in range(mask.shape[1]):
+            if new_mask[x, y] == 255:  # If the pixel is white in the mask
+                overlay[x, y] = (1 - alpha) * overlay[x, y] + alpha * np.array(yellow)
 
-    # 8. Convert overlay image (NumPy) back to PIL for base64 encoding
-    overlay_pil = Image.fromarray((label_rgb * 255).astype(np.uint8))
-
-    # 9. Encode as base64
-    img_byte_array = io.BytesIO()
-    overlay_pil.save(img_byte_array, format='PNG')
-    img_base64 = base64.b64encode(img_byte_array.getvalue()).decode('utf-8')
-
-    # 10. Construct the response
-    # Encode the original image as base64 for debugging
-    original_img_byte_array = io.BytesIO()
-    image_pil.save(original_img_byte_array, format='PNG')
-    original_img_base64 = base64.b64encode(original_img_byte_array.getvalue()).decode('utf-8')
+    img = Image.fromarray(overlay.astype(np.uint8))
+    img_byte_arr = io.BytesIO()
+    img.save(img_byte_arr, format='PNG')
+    img_byte_arr = img_byte_arr.getvalue()
+    img_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
 
     response_data = {
+        "total_cell_count": unfiltered_zones_count,
         "segmented_image": img_base64,
-        "nuclei_count": num_nuclei,
-        #"segmented_image": original_img_base64,  # Include original image for debugging
+        "cell_type_count_table": []
     }
-
     return jsonify(response_data), 200
 
 if __name__ == '__main__':
