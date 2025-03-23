@@ -1,74 +1,86 @@
-from disjoint_set import DisjointSet
+import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
 from PIL import Image
 import io
 import base64
-from utils import preprocess_image, get_mask, get_map_white_pixels_to_respresentatives, calculate_and_save_histogram_and_return_R_cutoff
+import cv2
+from utils import (
+    preprocess_image,
+    get_mask,
+    get_map_white_pixels_to_respresentatives,
+    calculate_and_save_histogram_and_return_R_cutoff,
+)
 
+# Initialize app and logging
 app = Flask(__name__)
 CORS(app)
+logging.basicConfig(level=logging.INFO)
 
-import cv2
+# Constants
+KERNEL_SIZE = (3, 3)
+DILATION_ITERATIONS = 2
+RPB_THRESHOLD_PERCENTILE = 50
+OVERLAY_COLOR = np.array([255, 255, 0], dtype=np.uint8)
+ALPHA_OVERLAY = 0.5
+
+
+def create_overlay(original_image, mask):
+    overlay = original_image.copy()
+    overlay[mask == 255] = ((1 - ALPHA_OVERLAY) * overlay[mask == 255] + ALPHA_OVERLAY * OVERLAY_COLOR).astype(np.uint8)
+    return overlay
+
 
 @app.route('/segment', methods=['POST'])
 def segment_image():
-    # 1. Get the file from the request
-    file = request.files.get('image', None)
-    if not file:
-        return jsonify({"error": "No file found"}), 400
-    
-    gray_array, image = preprocess_image(file)
-    mask = get_mask(gray_array)
-    img = Image.fromarray(mask)
-    kernel = np.ones((3,3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=2)
+    try:
+        file = request.files.get('image')
+        if file is None:
+            logging.error("No file received in request")
+            return jsonify({"error": "No file provided"}), 400
 
-    zones = get_map_white_pixels_to_respresentatives(mask) # list of lists of (x, y) coordinates
-    original_image = np.array(image)
-    
-    rpb_thresh = calculate_and_save_histogram_and_return_R_cutoff(50, original_image, zones)
+        gray_array, image = preprocess_image(file)
+        original_image = np.array(image)
 
-    # make a new mask with only the pixels that have R+B > rpb_thresh
-    new_mask = np.zeros_like(mask)
-    unfiltered_zones_count = 0
-    for zone in zones:
-        total_rpb = 0
-        for x, y in zone:
-            total_rpb += np.int64(original_image[x, y, 0])
-        avg_rpb = total_rpb // len(zone)
+        mask = get_mask(gray_array)
+        kernel = np.ones(KERNEL_SIZE, np.uint8)
+        dilated_mask = cv2.dilate(mask, kernel, iterations=DILATION_ITERATIONS)
 
-        if avg_rpb <= rpb_thresh:
-            unfiltered_zones_count += 1
-            for x, y in zone:
-                new_mask[x, y] = 255
+        zones = get_map_white_pixels_to_respresentatives(dilated_mask)
+        rpb_thresh = calculate_and_save_histogram_and_return_R_cutoff(RPB_THRESHOLD_PERCENTILE, original_image, zones)
 
+        new_mask = np.zeros_like(mask)
+        unfiltered_zones_count = 0
 
+        for zone in zones:
+            total_rpb = sum(original_image[x, y, 0] for x, y in zone)
+            avg_rpb = total_rpb / len(zone)
 
-    img = Image.fromarray(new_mask)
-    # Overlay the white parts of the mask on the original image with a transparent alpha in yellow
-    overlay = np.array(original_image, dtype=np.uint8)
-    yellow = [255, 255, 0]  # RGB for yellow
-    alpha = 0.5  # Transparency level
+            if avg_rpb <= rpb_thresh:
+                unfiltered_zones_count += 1
+                for x, y in zone:
+                    new_mask[x, y] = 255
 
-    for x in range(mask.shape[0]):
-        for y in range(mask.shape[1]):
-            if new_mask[x, y] == 255:  # If the pixel is white in the mask
-                overlay[x, y] = (1 - alpha) * overlay[x, y] + alpha * np.array(yellow)
+        overlay_image = create_overlay(original_image, new_mask)
 
-    img = Image.fromarray(overlay.astype(np.uint8))
-    img_byte_arr = io.BytesIO()
-    img.save(img_byte_arr, format='PNG')
-    img_byte_arr = img_byte_arr.getvalue()
-    img_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
+        img_byte_arr = io.BytesIO()
+        Image.fromarray(overlay_image).save(img_byte_arr, format='PNG')
+        img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
 
-    response_data = {
-        "total_cell_count": unfiltered_zones_count,
-        "segmented_image": img_base64,
-        "cell_type_count_table": []
-    }
-    return jsonify(response_data), 200
+        response_data = {
+            "total_cell_count": unfiltered_zones_count,
+            "segmented_image": img_base64,
+            "cell_type_count_table": []
+        }
+
+        logging.info(f"Segmentation successful, total cells: {unfiltered_zones_count}")
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        logging.exception("An error occurred during segmentation")
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    app.run(debug=False, host='0.0.0.0', port=8080)
