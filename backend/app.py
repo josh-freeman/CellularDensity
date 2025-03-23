@@ -38,15 +38,18 @@ def segment_image():
     # Create a temporary directory
     temp_dir_in = tempfile.mkdtemp()
     temp_dir_out = tempfile.mkdtemp()
-    NR_TYPES = 6
     type_info_path = 'type_info.json'
+    with open(os.path.join('models/hover_net', type_info_path), 'r') as type_info_file:
+        type_info = json.load(type_info_file)
+        NR_TYPES = len(type_info)
+
     infer_command = f"""python run_infer.py \
             --gpu='mps' \
             --nr_types={NR_TYPES} \
             --type_info_path={type_info_path} \
-            --batch_size=8 \
+            --batch_size=4 \
             --model_mode=fast \
-            --model_path=../pretrained/hovernet_fast_pannuke_type_tf2pytorch.tar \
+            --model_path=../pretrained/hovernet_fast_monusac_type_tf2pytorch.tar \
             --nr_inference_workers=8 \
             --nr_post_proc_workers=16 \
             tile \
