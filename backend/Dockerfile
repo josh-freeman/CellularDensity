@@ -14,6 +14,6 @@ EXPOSE 8000
 
 # Set Gunicorn with increased workers and timeout
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app:app", \
-     "--workers", "4", "--timeout", "120", \
+     "--workers", "1", "--timeout", "120", \
      "--access-logfile", "-", "--error-logfile", "-"]
 
