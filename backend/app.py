@@ -15,7 +15,7 @@ from utils import (
 
 # Initialize app and logging
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=['http://localhost:3000', 'http://localhost'])
 logging.basicConfig(level=logging.INFO)
 
 # Constants
@@ -83,4 +83,4 @@ def segment_image():
 
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=8080)
+    app.run(debug=False, host='0.0.0.0', port=8000)

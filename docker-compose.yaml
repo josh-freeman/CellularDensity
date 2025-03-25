@@ -1,8 +1,11 @@
+version: '3.8'
 services:
   backend:
     build: ./backend
     ports:
-      - "8080:8080"
+      - "8080:8000"
+    networks:
+      - cellulardensity
 
   frontend:
     build: ./frontend
@@ -10,3 +13,9 @@ services:
       - "3000:80"
     depends_on:
       - backend
+    networks:
+      - cellulardensity
+
+networks:
+  cellulardensity:
+
