@@ -37,31 +37,14 @@ def get_mask(image: np.ndarray) -> np.ndarray:
     return nuclei_mask
 
 
-def get_map_white_pixels_to_respresentatives(mask: np.ndarray) -> List[List[Tuple[int, int]]]:
-    white_pixel_groups = []
-    visited = set()
-    rows, cols = mask.shape
+def get_map_white_pixels_to_respresentatives(mask: np.ndarray) -> List[np.ndarray]:
+    num_labels, labels = cv2.connectedComponents(mask)
+    zones = []
 
-    def dfs(x, y, group):
-        stack = [(x, y)]
-        while stack:
-            cx, cy = stack.pop()
-            if (cx, cy) in visited:
-                continue
-            visited.add((cx, cy))
-            group.append((cx, cy))
-            for nx, ny in [(cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1), (cx - 1, cy - 1), (cx - 1, cy + 1), (cx + 1, cy - 1), (cx + 1, cy + 1)]:
-                if 0 <= nx < rows and 0 <= ny < cols and not (nx, ny) in visited and mask[nx, ny] == 255:
-                    stack.append((nx, ny))
-
-    for x in range(rows):
-        for y in range(cols):
-            if mask[x, y] == 255 and not (x,y) in visited:
-                group = []
-                dfs(x, y, group)
-                white_pixel_groups.append(group)
-
-    return white_pixel_groups
+    for label in range(1, num_labels):  # Skip background (label 0)
+        coords = np.argwhere(labels == label)
+        zones.append(coords)  # Each is an (N, 2) array
+    return zones
 
 def percentile(vals, p):
     n = sum(vals)
