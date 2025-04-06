@@ -6,11 +6,14 @@ from PIL import Image
 import io
 import base64
 import cv2
+from dotenv import load_dotenv
+import os
 from utils import (
     preprocess_image,
-    get_mask,
+    get_cell_mask,
     get_map_white_pixels_to_respresentatives,
     calculate_and_save_histogram_and_return_R_cutoff,
+    get_background_mask
 )
 
 # Initialize app and logging
@@ -26,9 +29,9 @@ OVERLAY_COLOR = np.array([255, 255, 0], dtype=np.uint8)
 ALPHA_OVERLAY = 0.5
 
 
-def create_overlay(original_image, mask):
+def create_overlay(original_image, mask, overlay_color=OVERLAY_COLOR):
     overlay = original_image.copy()
-    overlay[mask == 255] = ((1 - ALPHA_OVERLAY) * overlay[mask == 255] + ALPHA_OVERLAY * OVERLAY_COLOR).astype(np.uint8)
+    overlay[mask == 255] = ((1 - ALPHA_OVERLAY) * overlay[mask == 255] + ALPHA_OVERLAY * overlay_color).astype(np.uint8)
     return overlay
 
 
@@ -36,6 +39,7 @@ def create_overlay(original_image, mask):
 def segment_image():
     try:
         file = request.files.get('image')
+        micrometers_per_pixel = request.form.get('micrometers_per_pixel', type=float)
         if file is None:
             logging.error("No file received in request")
             return jsonify({"error": "No file provided"}), 400
@@ -43,7 +47,8 @@ def segment_image():
         gray_array, image = preprocess_image(file)
         original_image = np.array(image)
 
-        mask = get_mask(gray_array)
+        background_mask = get_background_mask(gray_array)
+        mask = get_cell_mask(gray_array)
         kernel = np.ones(KERNEL_SIZE, np.uint8)
         dilated_mask = cv2.dilate(mask, kernel, iterations=DILATION_ITERATIONS)
 
@@ -63,15 +68,17 @@ def segment_image():
                     new_mask[x, y] = 255
 
         overlay_image = create_overlay(original_image, new_mask)
+        overlay_image_background = create_overlay(overlay_image, background_mask, overlay_color=np.array([0, 0, 255], dtype=np.uint8))
 
         img_byte_arr = io.BytesIO()
-        Image.fromarray(overlay_image).save(img_byte_arr, format='PNG')
+        Image.fromarray(overlay_image_background).save(img_byte_arr, format='PNG')
         img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
 
         response_data = {
             "total_cell_count": unfiltered_zones_count,
             "segmented_image": img_base64,
-            "cell_type_count_table": []
+            "cell_type_count_table": [],
+            "foreground_area": int(np.sum(cv2.bitwise_not(background_mask)))  # Foreground area, in pixels
         }
 
         logging.info(f"Segmentation successful, total cells: {unfiltered_zones_count}")
@@ -83,4 +90,6 @@ def segment_image():
 
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=8000)
+    load_dotenv()
+    backend_port = int(os.getenv('BACKEND_PORT'))
+    app.run(debug=False, host='0.0.0.0', port=backend_port)

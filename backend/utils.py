@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import os
 import base64
+GRABCUT_ITERATIONS = 5
 
 def preprocess_image(uploaded_file):
     """Preprocess the image by converting it to grayscale."""
@@ -15,7 +16,41 @@ def preprocess_image(uploaded_file):
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     return gray, image
 
-def get_mask(image: np.ndarray) -> np.ndarray:
+def get_background_mask(image: np.ndarray) -> np.ndarray:
+    """
+    Returns a binary mask of the background in the input image.
+    The background is assumed to be the most uniform or dominant region.
+
+    Parameters:
+        image (numpy.ndarray): Input BGR image.
+
+    Returns:
+        mask (numpy.ndarray): Binary mask where background is 255 and foreground is 0.
+    """
+    # Create an initial mask
+    mask = np.zeros(image.shape[:2], np.uint8)
+
+    # Define a rectangle that likely contains the foreground (center 90% of image)
+    height, width = image.shape[:2]
+    rect = (int(0.05 * width), int(0.05 * height), int(0.9 * width), int(0.9 * height))
+
+    # Allocate memory for models (required by GrabCut but not used by you)
+    bgdModel = np.zeros((1, 65), np.float64)
+    fgdModel = np.zeros((1, 65), np.float64)
+
+    # Ensure the image is in 3-channel format (CV_8UC3)
+    if len(image.shape) == 2 or image.shape[2] != 3:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+    # Apply GrabCut: an iterative algorithm to segment the image
+    cv2.grabCut(image, mask, rect, bgdModel, fgdModel, GRABCUT_ITERATIONS, cv2.GC_INIT_WITH_RECT)
+
+    # Extract background: 0 and 2 are background pixels
+    background_mask = np.where((mask == cv2.GC_BGD) | (mask == cv2.GC_PR_BGD), 255, 0).astype('uint8')
+
+    return background_mask
+
+def get_cell_mask(image: np.ndarray) -> np.ndarray:
     thresh = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
                                    cv2.THRESH_BINARY_INV, 11, 1)
     # in order: source image, threshold value, max value, threshold type
@@ -40,7 +75,14 @@ def get_mask(image: np.ndarray) -> np.ndarray:
 def get_map_white_pixels_to_respresentatives(mask: np.ndarray) -> List[np.ndarray]:
     num_labels, labels = cv2.connectedComponents(mask)
     zones = []
+    # Calculate the size of each zone
+    zone_sizes = [len(np.argwhere(labels == label)) for label in range(1, num_labels)]
 
+    # Save the histogram of zone sizes
+    histogram, bin_edges = np.histogram(zone_sizes, bins=20)  # Adjust bins as needed
+    histogram_filename = os.path.join("../data", "zone_size_histogram.csv")
+    os.makedirs(os.path.dirname(histogram_filename), exist_ok=True)
+    np.savetxt(histogram_filename, np.column_stack((bin_edges[:-1], histogram)), delimiter=",", fmt="%d", header="Bin Start,Count", comments="")
     for label in range(1, num_labels):  # Skip background (label 0)
         coords = np.argwhere(labels == label)
         zones.append(coords)  # Each is an (N, 2) array

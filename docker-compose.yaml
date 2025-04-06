@@ -3,7 +3,7 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8080:8000"
+      - "${BACKEND_PORT}:8000"
     networks:
       - cellulardensity
 

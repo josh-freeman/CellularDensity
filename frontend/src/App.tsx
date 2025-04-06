@@ -36,7 +36,14 @@ function App() {
       }
       if (data.total_cell_count) {
         setCellTypeCountTable([{ name: 'Nuclei', color: [0, 0, 0], count: data.total_cell_count }]);
-      } else if (Array.isArray(data.cell_type_count_table)) {
+        if (data.foreground_area){
+          setCellTypeCountTable((prev) => {
+            const updated = [...prev];
+            updated.push({ name: 'Area (pixels)', color: [0, 0, 0], count: data.foreground_area });
+            return updated;
+          });
+        }
+      }  else if (Array.isArray(data.cell_type_count_table)) {
         setCellTypeCountTable(data.cell_type_count_table);
       } else {
         setCellTypeCountTable([]);
@@ -45,6 +52,7 @@ function App() {
       console.error(error);
       alert('Something went wrong, please try again!');
     }
+
   };
 
   return (
