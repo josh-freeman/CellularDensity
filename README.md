@@ -3,10 +3,7 @@ Some hyperparameters:
 - Kernel size
 - Percentile of Red intensity value
 - Number of kernel iterations
-
-Important TODOs:
-- Setup CI/CD
-- Have cutoff not be just on red but on red+blue. There is no use in the fact that red is bimodal. It might actually be hurting us.
+- size of kernel when doing adaptive thresholding 
 
 Further stuff:
 - Heatmap implementation
