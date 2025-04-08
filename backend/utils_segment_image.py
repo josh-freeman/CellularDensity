@@ -3,7 +3,19 @@ import cv2
 import numpy as np
 import os
 import base64
-GRABCUT_ITERATIONS = 5
+from concurrent.futures import ThreadPoolExecutor
+from constants import (
+    KERNEL_SIZE,
+    DILATION_ITERATIONS,
+    ALPHA_OVERLAY,
+    RPB_THRESHOLD_PERCENTILE,
+    GRABCUT_ITERATIONS
+)
+
+def create_overlay(original_image, mask, overlay_color):
+    overlay = original_image.copy()
+    overlay[mask == 255] = ((1 - ALPHA_OVERLAY) * overlay[mask == 255] + ALPHA_OVERLAY * overlay_color).astype(np.uint8)
+    return overlay
 
 def preprocess_image(uploaded_file):
     """Preprocess the image by converting it to grayscale."""
@@ -50,7 +62,7 @@ def get_background_mask(image: np.ndarray) -> np.ndarray:
 
     return background_mask
 
-def get_cell_mask(image: np.ndarray) -> np.ndarray:
+def get_nuclei_mask(image: np.ndarray) -> np.ndarray:
     thresh = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
                                    cv2.THRESH_BINARY_INV, 11, 1)
     # in order: source image, threshold value, max value, threshold type
@@ -136,3 +148,69 @@ def calculate_and_save_histogram_and_return_R_cutoff(percentile:float, image: np
     target_value = total_pixels * (percentile / 100.0)
     rb_percentile_value = np.searchsorted(cumulative_sum, target_value)
     return rb_percentile_value
+
+def compute_nuclei_mask_and_count(original_image, gray_array):
+    """
+    Extracted function that computes:
+      - The number of nuclei
+      - The final nuclei mask (new_mask)
+
+    Does NOT return background_mask.
+    """
+    # Initial mask and dilation
+    mask = get_nuclei_mask(gray_array)
+    kernel = np.ones(KERNEL_SIZE, np.uint8)
+    dilated_mask = cv2.dilate(mask, kernel, iterations=DILATION_ITERATIONS)
+
+    # Identify all “zones” of interest
+    zones = get_map_white_pixels_to_respresentatives(dilated_mask)
+
+    # Calculate threshold
+    rpb_thresh = calculate_and_save_histogram_and_return_R_cutoff(
+        RPB_THRESHOLD_PERCENTILE,
+        original_image,
+        zones
+    )
+
+    # Build the final mask
+    new_mask = np.zeros_like(mask)
+    unfiltered_zones_count = 0
+
+    def process_zone(zone):
+        total_rpb = sum(int(original_image[x, y, 0]) for x, y in zone)
+        avg_rpb = total_rpb / len(zone)
+        if avg_rpb <= rpb_thresh:
+            return zone
+        return None
+
+    # Parallel zone processing
+    with ThreadPoolExecutor() as executor:
+        filtered_zones = list(executor.map(process_zone, zones))
+
+    for zone in filtered_zones:
+        if zone is not None:
+            unfiltered_zones_count += 1
+            for x, y in zone:
+                new_mask[x, y] = 255
+
+    return unfiltered_zones_count, new_mask
+
+
+def analyze_nuclei(original_image, gray_array):
+    """
+    Function that takes in the original image (and, if needed, its grayscale version)
+    and returns:
+        1) the number of nuclei,
+        2) the final nuclei mask,
+        3) the background mask.
+    """
+    # Background mask
+    background_mask = get_background_mask(gray_array)
+
+    # Use the newly-extracted helper
+    unfiltered_zones_count, new_mask = compute_nuclei_mask_and_count(
+        original_image, gray_array
+    )
+
+    # Return all three
+    return unfiltered_zones_count, new_mask, background_mask

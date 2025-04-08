@@ -1,5 +1,5 @@
 import numpy as np
-from utils import get_map_white_pixels_to_respresentatives
+from utils_segment_image import get_map_white_pixels_to_respresentatives
 
 def test_get_map_white_pixels_to_respresentatives():
     # Create a test mask with two distinct white regions

@@ -4,7 +4,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0
-
 # Install system dependency required by OpenCV
 RUN apt-get update && apt-get install -y libgl1-mesa-glx
 
@@ -19,4 +18,3 @@ EXPOSE 8000
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "app:app", \
      "--workers", "1", "--timeout", "120", \
      "--access-logfile", "-", "--error-logfile", "-"]
-

@@ -30,7 +30,7 @@ function App() {
       }
 
       const data = await response.json();
-      console.log(data);
+      console.log(Object.keys(data));
       if (data.segmented_image) {
         setSegmentedImage(data.segmented_image);
       }
