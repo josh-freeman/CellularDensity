@@ -12,3 +12,8 @@ Further stuff:
 3. Dividing the image into a grid of w*h rectangles, count how many `representatives` each grid rectangle contains as a fraction of the total. Color it accordingly.
 - Histogram stretching
 - OTSU formula
+
+
+## environment
+1. `.env` file:
+   1. Setting the backend port: choose wisely. In `.env.example` it is `8000` instead of `8080` because, on mac, `8080` is reserved.
