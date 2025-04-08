@@ -24,7 +24,8 @@ from constants import (
 from utils_segment_whole_slide import (
     get_saved_contours,
     get_top_biggest_contours,
-    tile_and_save_contours
+    tile_and_save_contours,
+
 )
 def process_image_segmentation_request(file: io.BytesIO) -> dict:
     """
@@ -68,6 +69,7 @@ def process_ndpi_segmentation_request(
     top_biggest_contours_to_observe=TOP_BIGGEST_CONTOURS_TO_OBSERVE,
     tile_size=TILE_SIZE,
     min_fraction_of_tile_inside_contour=MIN_FRACTION_OF_TILE_INSIDE_CONTOUR,
+    output_tiles_path=None
 ):
     """
     Process an OpenSlide object to:
@@ -139,3 +141,4 @@ def process_ndpi_segmentation_request(
         min_coverage_fraction=min_fraction_of_tile_inside_contour,
         output_dir=output_tiles_path
     )
+    return result
