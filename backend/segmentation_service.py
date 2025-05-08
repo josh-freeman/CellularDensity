@@ -27,6 +27,7 @@ from utils_segment_whole_slide import (
     tile_and_save_contours,
 
 )
+np.random.seed(42)
 def process_image_segmentation_request(file: io.BytesIO) -> dict:
     """
     High-level function that takes in the image file and microns per pixel,
@@ -36,7 +37,7 @@ def process_image_segmentation_request(file: io.BytesIO) -> dict:
     # Convert to a numpy-friendly format
     gray_array, image = preprocess_image(file)
     original_image = np.array(image)
-
+    print("hereeee")
     # This function call returns the count of nuclei and the two masks.
     total_cells, nuclei_mask, background_mask = analyze_nuclei(original_image, gray_array)
 
@@ -90,6 +91,7 @@ def process_ndpi_segmentation_request(
                                   with the contour to be saved
     :param output_tiles_path:     Where to write output images/tiles (if not None)
     """
+    logging.info("inside process_ndpi_segmentation_request")
 
     # If the slide is closed, reopen it
     if slide._osr is None and ndpi_file is not None:
@@ -97,6 +99,8 @@ def process_ndpi_segmentation_request(
 
     # Read the downsampled image at the requested level
     level_image = slide.read_region((0, 0), contour_level, slide.level_dimensions[contour_level])
+    print(f"Using contour_level: {contour_level}, shape: {slide.level_dimensions[contour_level]}")
+
     level_array = np.array(level_image.convert("RGB"))
 
     # Get contours from the array

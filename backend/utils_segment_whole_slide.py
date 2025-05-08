@@ -11,17 +11,26 @@ from utils_segment_image import (
     get_background_mask
 )
 from constants import (
+    TILE_SIZE,
     TOP_BIGGEST_CONTOURS_TO_OBSERVE
 )
 import openslide
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+np.random.seed(42)
 
 def get_saved_contours(level_array):    
-    mask_background = get_background_mask(level_array)
+    #mask_background = get_background_mask(level_array)
+    # Convert to grayscale
+    gray = cv2.cvtColor(level_array, cv2.COLOR_RGB2GRAY)
 
+    # Smooth the grayscale image
+    blurred = cv2.GaussianBlur(gray, (9, 9), 0)
+
+    # Apply binary threshold to get tissue regions
+    _, binary_mask = cv2.threshold(blurred, 210, 255, cv2.THRESH_BINARY_INV)
     # Apply a kernel to smoothen the mask
-    kernel = np.ones((3, 3), np.uint8)
-    smoothed_mask = cv2.morphologyEx(mask_background, cv2.MORPH_CLOSE, kernel)
+    kernel = np.ones((5, 5), np.uint8)
+    smoothed_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
 
     # Invert the smoothed mask
     inverted_mask = cv2.bitwise_not(smoothed_mask)
@@ -35,7 +44,7 @@ def get_saved_contours(level_array):
 def prepare_tile_info(
     x0: int, y0: int,
     w0: int, h0: int,
-    tile_size: int,
+    tile_size:  TILE_SIZE,
     scale_x: float, scale_y: float
 ) -> List[Tuple]:
     """
@@ -175,7 +184,7 @@ def process_one_tile(
 
 def create_mosaic(
     tile_grid: List[List[np.ndarray]],
-    tile_size: int
+    tile_size:  TILE_SIZE
 ) -> np.ndarray:
     """
     Create a single large mosaic image from a 2D grid of tile images (RGB).
@@ -222,7 +231,7 @@ def tile_and_save_contours(
     mpp_y: float,
     saved_contours,
     downsample_factor: float,
-    tile_size: int = 512,
+    tile_size:  TILE_SIZE,
     min_coverage_fraction: float = 0.5,
     output_dir: str | None = None
 ):
