@@ -9,9 +9,10 @@ from constants import (
     DILATION_ITERATIONS,
     ALPHA_OVERLAY,
     RPB_THRESHOLD_PERCENTILE,
-    GRABCUT_ITERATIONS
+    GRABCUT_ITERATIONS, 
+    THRES_PARAMETER
 )
-np.random.seed(42)
+
 
 def create_overlay(original_image, mask, overlay_color):
     overlay = original_image.copy()
@@ -65,7 +66,7 @@ def get_background_mask(image: np.ndarray) -> np.ndarray:
 
 def get_nuclei_mask(image: np.ndarray) -> np.ndarray:
     thresh = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                   cv2.THRESH_BINARY_INV, 13, 1)
+                                   cv2.THRESH_BINARY_INV, THRES_PARAMETER, 1)
     # in order: source image, threshold value, max value, threshold type
     # max value means the maximum intensity value that can be assigned to a pixel
     # threshold type is the type of thresholding operation: 2 = binary inverse, 3 = binary, 4 = truncation, 5 = to zero, 6 = to zero inverse
@@ -263,4 +264,3 @@ def otsu_threshold(histogram: np.ndarray) -> float:
             threshold = t
     percentile_threshold = (threshold / 255) * 100
     return percentile_threshold
-            
