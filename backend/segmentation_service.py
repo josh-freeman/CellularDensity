@@ -18,7 +18,7 @@ from constants import (
     TILE_SIZE,
     TOP_BIGGEST_CONTOURS_TO_OBSERVE,
     CONTOUR_LEVEL,
-    MIN_FRACTION_OF_TILE_INSIDE_CONTOUR
+    MIN_FRACTION_OF_TILE_INSIDE_CONTOUR,
 )
 
 from utils_segment_whole_slide import (
@@ -27,7 +27,7 @@ from utils_segment_whole_slide import (
     tile_and_save_contours,
 
 )
-np.random.seed(42)
+
 def process_image_segmentation_request(file: io.BytesIO) -> dict:
     """
     High-level function that takes in the image file and microns per pixel,
@@ -37,7 +37,6 @@ def process_image_segmentation_request(file: io.BytesIO) -> dict:
     # Convert to a numpy-friendly format
     gray_array, image = preprocess_image(file)
     original_image = np.array(image)
-    print("hereeee")
     # This function call returns the count of nuclei and the two masks.
     total_cells, nuclei_mask, background_mask = analyze_nuclei(original_image, gray_array)
 
@@ -99,13 +98,11 @@ def process_ndpi_segmentation_request(
 
     # Read the downsampled image at the requested level
     level_image = slide.read_region((0, 0), contour_level, slide.level_dimensions[contour_level])
-    print(f"Using contour_level: {contour_level}, shape: {slide.level_dimensions[contour_level]}")
-
     level_array = np.array(level_image.convert("RGB"))
 
     # Get contours from the array
     saved_contours = get_saved_contours(level_array)
-    
+    print(f"Found {len(saved_contours)} contours")
     # Create overlay image to visualize contours
     overlay_image = level_array.copy()
       # example fallback
@@ -125,13 +122,15 @@ def process_ndpi_segmentation_request(
         logging.info(f"Overlay image with contours saved to: {overlay_image_path}")
 
     # Create tissue/non-tissue mask
+
+    
     mask_background = get_background_mask(level_array)      # 255 = background, 0 = tissue
     tissue_mask = cv2.bitwise_not(mask_background)          # invert: 255 = tissue, 0 = background
-
+    
     # Optionally, regenerate or update contours (for example, if you need only the top largest ones)
     saved_contours = get_saved_contours(level_array)
     saved_contours = get_top_biggest_contours(saved_contours, top_n=top_biggest_contours_to_observe)
-
+  
     # Tile and save contours
     result = tile_and_save_contours(
         slide,
