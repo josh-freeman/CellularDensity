@@ -24,8 +24,7 @@ from constants import (
 from utils_segment_whole_slide import (
     get_saved_contours,
     get_top_biggest_contours,
-    tile_and_save_contours,
-
+    tile_and_save_contours
 )
 def process_image_segmentation_request(file: io.BytesIO) -> dict:
     """
@@ -101,6 +100,7 @@ def process_ndpi_segmentation_request(
 
     # Get contours from the array
     saved_contours = get_saved_contours(level_array)
+    logging.info(f"Found {len(saved_contours)} contours")
     
     # Create overlay image to visualize contours
     overlay_image = level_array.copy()

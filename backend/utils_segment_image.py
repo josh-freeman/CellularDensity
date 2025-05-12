@@ -9,7 +9,8 @@ from constants import (
     DILATION_ITERATIONS,
     ALPHA_OVERLAY,
     RPB_THRESHOLD_PERCENTILE,
-    GRABCUT_ITERATIONS
+    GRABCUT_ITERATIONS, 
+    THRES_PARAMETER
 )
 
 def create_overlay(original_image, mask, overlay_color):
@@ -63,8 +64,8 @@ def get_background_mask(image: np.ndarray) -> np.ndarray:
     return background_mask
 
 def get_nuclei_mask(image: np.ndarray) -> np.ndarray:
-    thresh = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_MEAN_C, 
-                                   cv2.THRESH_BINARY_INV, 11, 1)
+    thresh = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                   cv2.THRESH_BINARY_INV, THRES_PARAMETER, 1)
     # in order: source image, threshold value, max value, threshold type
     # max value means the maximum intensity value that can be assigned to a pixel
     # threshold type is the type of thresholding operation: 2 = binary inverse, 3 = binary, 4 = truncation, 5 = to zero, 6 = to zero inverse
@@ -138,6 +139,7 @@ def calculate_and_save_histogram_and_return_R_cutoff(percentile:float, image: np
     cv2.imwrite(image_filename, cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
     np.savetxt(histogram_filename, histogram, delimiter=",", fmt="%d")
     # Calculate the cumulative sum of the histogram for the R+B channel
+    percentile_otsu = otsu_threshold(histogram)
     rb_histogram = histogram[:, 0] + histogram[:, 2]
     cumulative_sum = np.cumsum(rb_histogram)
 
@@ -145,7 +147,7 @@ def calculate_and_save_histogram_and_return_R_cutoff(percentile:float, image: np
     total_pixels = cumulative_sum[-1]
 
     # Determine the pixel intensity corresponding to the given percentile
-    target_value = total_pixels * (percentile / 100.0)
+    target_value = total_pixels * (percentile_otsu / 100.0)
     rb_percentile_value = np.searchsorted(cumulative_sum, target_value)
     return rb_percentile_value
 
@@ -214,3 +216,50 @@ def analyze_nuclei(original_image, gray_array):
 
     # Return all three
     return unfiltered_zones_count, new_mask, background_mask
+
+def otsu_threshold(histogram: np.ndarray) -> float:
+    """
+    Calculate the optimal threshold using Otsu's method.
+
+    Parameters:
+        histogram (numpy.ndarray): The RGB histogram (256x3 array).
+
+    Returns:
+        float: The optimal threshold value.
+    """
+    # Combine R and B channels
+    rb_histogram = histogram[:, 0] + histogram[:, 2]
+
+    # Total number of pixels
+    total_pixels = np.sum(rb_histogram)
+
+    # Initialize variables
+    sum_total = np.sum([i * rb_histogram[i] for i in range(256)])
+    sum_background = 0
+    weight_background = 0
+    weight_foreground = 0
+    max_variance = 0
+    threshold = 0
+
+    for t in range(256):
+        weight_background += rb_histogram[t]
+        if weight_background == 0:
+            continue
+
+        weight_foreground = total_pixels - weight_background
+        if weight_foreground == 0:
+            break
+
+        sum_background += t * rb_histogram[t]
+        mean_background = sum_background / weight_background
+        mean_foreground = (sum_total - sum_background) / weight_foreground
+
+        # Calculate between-class variance
+        variance_between = weight_background * weight_foreground * (mean_background - mean_foreground) ** 2
+
+        # Check if new maximum found
+        if variance_between > max_variance:
+            max_variance = variance_between
+            threshold = t
+    percentile_threshold = (threshold / 255) * 100
+    return percentile_threshold

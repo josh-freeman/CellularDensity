@@ -11,6 +11,7 @@ from utils_segment_image import (
     get_background_mask
 )
 from constants import (
+    KERNEL_SIZE,
     TOP_BIGGEST_CONTOURS_TO_OBSERVE
 )
 import openslide
@@ -20,7 +21,7 @@ def get_saved_contours(level_array):
     mask_background = get_background_mask(level_array)
 
     # Apply a kernel to smoothen the mask
-    kernel = np.ones((3, 3), np.uint8)
+    kernel = np.ones(KERNEL_SIZE, np.uint8)
     smoothed_mask = cv2.morphologyEx(mask_background, cv2.MORPH_CLOSE, kernel)
 
     # Invert the smoothed mask
@@ -30,7 +31,6 @@ def get_saved_contours(level_array):
     contours, _ = cv2.findContours(inverted_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     return contours
-
 
 def prepare_tile_info(
     x0: int, y0: int,
@@ -222,7 +222,7 @@ def tile_and_save_contours(
     mpp_y: float,
     saved_contours,
     downsample_factor: float,
-    tile_size: int = 512,
+    tile_size: int,
     min_coverage_fraction: float = 0.5,
     output_dir: str | None = None
 ):
