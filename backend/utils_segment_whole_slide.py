@@ -11,21 +11,18 @@ from utils_segment_image import (
     get_background_mask
 )
 from constants import (
+    KERNEL_SIZE,
     TOP_BIGGEST_CONTOURS_TO_OBSERVE
 )
 import openslide
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-
 def get_saved_contours(level_array):    
     mask_background = get_background_mask(level_array)
-    
+
     # Apply a kernel to smoothen the mask
-    kernel = np.ones((3, 3), np.uint8)
+    kernel = np.ones(KERNEL_SIZE, np.uint8)
     smoothed_mask = cv2.morphologyEx(mask_background, cv2.MORPH_CLOSE, kernel)
-    
-    #closed = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
-    #cleaned = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel)
 
     # Invert the smoothed mask
     inverted_mask = cv2.bitwise_not(smoothed_mask)
@@ -35,11 +32,10 @@ def get_saved_contours(level_array):
 
     return contours
 
-
 def prepare_tile_info(
     x0: int, y0: int,
     w0: int, h0: int,
-    tile_size:  int,
+    tile_size: int,
     scale_x: float, scale_y: float
 ) -> List[Tuple]:
     """
