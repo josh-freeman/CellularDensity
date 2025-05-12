@@ -13,7 +13,6 @@ from constants import (
     THRES_PARAMETER
 )
 
-
 def create_overlay(original_image, mask, overlay_color):
     overlay = original_image.copy()
     overlay[mask == 255] = ((1 - ALPHA_OVERLAY) * overlay[mask == 255] + ALPHA_OVERLAY * overlay_color).astype(np.uint8)
