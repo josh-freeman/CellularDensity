@@ -8,8 +8,10 @@ Supports batch processing, visualization, and quantitative analysis.
 Auto-downloads models from HuggingFace repository: JoshuaFreeman/skin_seg
 
 Key Features:
-- Auto-detects backbone architecture from model names
+- EXACT same preprocessing and model architecture as training pipeline
+- Auto-detects backbone architecture from model names  
 - Downloads any model from HuggingFace JoshuaFreeman/skin_seg repository
+- Supports GigaPath, DINOv2, and EfficientNet architectures
 - Generates 3 key tissue masks: Epidermis, Dermis (RET+PAP), Structural (GLD+KER+HYP)
 - Comprehensive 6-panel visualizations with statistics
 - Individual binary mask export
@@ -205,17 +207,111 @@ class SkinSegmentationModel:
             raise
     
     def _load_model(self, model_path: str) -> torch.nn.Module:
-        """Load the segmentation model."""
+        """Load the segmentation model with EXACT same architecture as training."""
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
-        # Create model architecture
-        model = smp.Unet(
-            encoder_name=self.backbone,
-            encoder_weights=None,  # We'll load our fine-tuned weights
-            classes=12,
-            activation=None
-        )
+        # Create model architecture EXACTLY like training
+        if self.backbone == "gigapath_vitl":
+            # Use custom GigaPath implementation (same as training)
+            try:
+                import timm
+                class GigaPathSeg(torch.nn.Module):
+                    def __init__(self, n_classes=12, pretrained=False):
+                        super().__init__()
+                        self.backbone = timm.create_model(
+                            "hf_hub:prov-gigapath/prov-gigapath",
+                            pretrained=pretrained,
+                            num_classes=0
+                        )
+                        
+                        # Get patch size
+                        _p = self.backbone.patch_embed.patch_size
+                        self.patch_h, self.patch_w = (_p, _p) if isinstance(_p, int) else _p
+                        C = self.backbone.embed_dim  # 1024
+                        
+                        self.decoder = torch.nn.Sequential(
+                            torch.nn.ConvTranspose2d(C, 512, 2, stride=2), torch.nn.GELU(),
+                            torch.nn.ConvTranspose2d(512, 256, 2, stride=2), torch.nn.GELU(),
+                            torch.nn.ConvTranspose2d(256, 128, 2, stride=2), torch.nn.GELU(),
+                            torch.nn.Conv2d(128, n_classes, 1)
+                        )
+                    
+                    def forward(self, x):
+                        B, _, H, W = x.shape
+                        tokens = self.backbone.forward_features(x)  # B, N+1, C
+                        tokens = tokens[:, 1:, :]  # drop CLS
+                        
+                        # Reshape sequence back to 2-D grid
+                        h = H // self.patch_h
+                        w = W // self.patch_w
+                        feat = tokens.transpose(1, 2).reshape(B, -1, h, w)  # B, C, h, w
+                        
+                        mask = self.decoder(feat)
+                        return torch.nn.functional.interpolate(
+                            mask, size=(H, W), mode="bilinear", align_corners=False
+                        )
+                
+                model = GigaPathSeg(n_classes=12, pretrained=False)
+                print(f"✅ Created custom GigaPath model")
+                
+            except Exception as e:
+                print(f"❌ Error creating GigaPath model: {e}")
+                raise
+                
+        elif 'dinov2' in self.backbone:
+            # Use custom DINOv2 implementation (same as training)
+            try:
+                import timm
+                class DINOv2Seg(torch.nn.Module):
+                    def __init__(self, model_name="vit_base_patch14_dinov2", n_classes=12, pretrained=False):
+                        super().__init__()
+                        self.backbone = timm.create_model(
+                            model_name,
+                            pretrained=pretrained,
+                            num_classes=0,
+                            img_size=224
+                        )
+                        
+                        self.patch_h = self.patch_w = self.backbone.patch_embed.patch_size[0]
+                        C = self.backbone.embed_dim
+                        
+                        self.decoder = torch.nn.Sequential(
+                            torch.nn.ConvTranspose2d(C, 512, 2, stride=2), torch.nn.GELU(),
+                            torch.nn.ConvTranspose2d(512, 256, 2, stride=2), torch.nn.GELU(),
+                            torch.nn.ConvTranspose2d(256, 128, 2, stride=2), torch.nn.GELU(),
+                            torch.nn.Conv2d(128, n_classes, 1)
+                        )
+                    
+                    def forward(self, x):
+                        B, _, H, W = x.shape
+                        tokens = self.backbone.forward_features(x)  # B, N+1, C
+                        tokens = tokens[:, 1:, :]  # drop CLS
+                        
+                        h = H // self.patch_h
+                        w = W // self.patch_w
+                        feat = tokens.transpose(1, 2).reshape(B, -1, h, w)  # B, C, h, w
+                        
+                        mask = self.decoder(feat)
+                        return torch.nn.functional.interpolate(
+                            mask, size=(H, W), mode="bilinear", align_corners=False
+                        )
+                
+                model = DINOv2Seg(model_name=self.backbone, n_classes=12, pretrained=False)
+                print(f"✅ Created custom DINOv2 model")
+                
+            except Exception as e:
+                print(f"❌ Error creating DINOv2 model: {e}")
+                raise
+        else:
+            # Use segmentation-models-pytorch for standard backbones
+            model = smp.Unet(
+                encoder_name=self.backbone,
+                encoder_weights=None,  # We'll load our fine-tuned weights
+                classes=12,
+                activation=None
+            )
+            print(f"✅ Created SMP model with {self.backbone} backbone")
         
         # Load trained weights
         state_dict = torch.load(model_path, map_location=self.device)
@@ -226,17 +322,22 @@ class SkinSegmentationModel:
         print(f"✅ Loaded {self.backbone} model from {model_path}")
         return model
     
-    def _get_transform(self) -> transforms.Compose:
-        """Get the preprocessing transform."""
-        return transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    def _get_transform(self):
+        """Get the preprocessing transform - EXACT same as training pipeline."""
+        import albumentations as A
+        from albumentations.pytorch import ToTensorV2
+        
+        # Use EXACT same preprocessing as training (no augmentation)
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+        return A.Compose([
+            A.Normalize(mean, std),
+            ToTensorV2()
         ])
     
     def predict(self, image: Image.Image) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Perform segmentation prediction on an image.
+        Perform segmentation prediction on an image using EXACT same preprocessing as training.
         
         Args:
             image: PIL Image to segment
@@ -244,8 +345,33 @@ class SkinSegmentationModel:
         Returns:
             Tuple of (prediction_mask, confidence_map)
         """
-        # Preprocess
-        input_tensor = self.transform(image).unsqueeze(0).to(self.device)
+        # Convert to numpy array (uint8 0-255, same as training)
+        img_array = np.array(image.convert('RGB'))
+        h, w = img_array.shape[:2]
+        
+        # Handle image resizing to 224x224 EXACTLY like training
+        patch_size = 224
+        if h > patch_size or w > patch_size:
+            # Select center patch (same as training inference)
+            if h > patch_size:
+                y = (h - patch_size) // 2
+            else:
+                y = 0
+            if w > patch_size:
+                x = (w - patch_size) // 2
+            else:
+                x = 0
+            img_array = img_array[y:y+patch_size, x:x+patch_size]
+        
+        # If image is smaller, pad it (same as training inference)
+        if img_array.shape[0] < patch_size or img_array.shape[1] < patch_size:
+            pad_h = max(0, patch_size - img_array.shape[0])
+            pad_w = max(0, patch_size - img_array.shape[1])
+            img_array = np.pad(img_array, ((0, pad_h), (0, pad_w), (0, 0)), mode='constant', constant_values=255)
+        
+        # Apply EXACT same transform as training
+        transformed = self.transform(image=img_array)
+        input_tensor = transformed["image"].unsqueeze(0).to(self.device)
         
         # Inference
         with torch.no_grad():
