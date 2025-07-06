@@ -25,22 +25,32 @@ CellularDensity/
 
 ## 🔬 Analysis Capabilities
 
-### 1. Cellular Density Analysis (NDPI Files)
+### 1. Enhanced Cellular Density Analysis (NDPI Files)
 
-**Purpose**: Count nuclei in whole slide images for rejection monitoring in transplant samples.
+**Purpose**: Count nuclei in whole slide images for rejection monitoring in transplant samples with advanced tissue filtering capabilities.
 
 **Key Features**:
 - Adaptive thresholding with red channel intensity filtering
+- **NEW: Tissue-specific cell counting** with 3 filtering modes
+- **NEW: Inference tile subdivision** for improved accuracy
+- **NEW: Segmentation-based background masking** (smooth BKG labels)
 - Contour-based tissue region detection
 - Parallel tile processing for large images
-- Comprehensive statistical analysis
-- Heatmap visualization of cellular density
+- Comprehensive statistical analysis with tissue filtering metrics
+- Enhanced tile mosaics with tissue overlay visualizations
+
+**Advanced Tissue Filtering**:
+- **Mode 0 (None)**: Count all tissue areas (default behavior)
+- **Mode 1 (Exclude Structural)**: Exclude GLD+KER+HYP from counting (gray overlay)
+- **Mode 2 (Dermis+Hypodermis Only)**: Count only in RET+PAP+EPI tissue (blue overlay)
 
 **Technical Details**:
 - Uses OTSU thresholding with R+B channel filtering
-- Configurable kernel operations for morphological processing
-- Percentile-based red intensity value analysis
-- Multi-level image pyramid processing
+- Segmentation-driven tissue classification for filtering
+- Inference tile subdivision with configurable sizes
+- Mask-based nuclei filtering using bitwise operations
+- Smooth background handling from BKG segmentation labels
+- Multi-level image pyramid processing with tissue awareness
 
 ### 2. Skin Tissue Segmentation
 
@@ -139,13 +149,29 @@ masking:
 ```bash
 cd backend/wsi_processing
 
-# Process all NDPI files in a directory
+# Basic processing (no tissue filtering)
 python main.py --input-dir ../../ndpi_files --output-dir ../../results
 
-# Process a single file with custom config
+# NEW: Process with dermis+hypodermis tissue filtering
+python main.py \
+  --input-file "../../ndpi_files/sample.ndpi" \
+  --output-dir ../../results_dermis_hypodermis \
+  --tissue-filter dermis-hypodermis-only \
+  --segmentation-model efficientnet-b3
+
+# NEW: Exclude structural tissue from counting
+python main.py \
+  --input-file "../../ndpi_files/sample.ndpi" \
+  --output-dir ../../results_exclude_structural \
+  --tissue-filter exclude-structural \
+  --segmentation-model efficientnet-b5
+
+# Process with custom config and tissue filtering
 python main.py --input-file ../../ndpi_files/sample1.ndpi \
                --output-dir ../../results \
-               --config ../../config.yaml
+               --config ../../config.yaml \
+               --tissue-filter dermis-hypodermis-only \
+               --segmentation-model efficientnet-b3
 
 # See all options
 python main.py --help
@@ -172,17 +198,24 @@ npm start
 
 ### Step 4: Understanding Results
 
-The analysis generates:
+The analysis generates enhanced outputs with tissue filtering capabilities:
 
 ```
 results/
 ├── sample1/
 │   ├── overview.png              # Whole slide overview with contours
 │   ├── mask_1_contour_1/
-│   │   └── tile_mosaic.png      # Processed tiles for contour 1
+│   │   ├── tile_mosaic.png      # Enhanced tiles with tissue overlays
+│   │   └── inference_tiles/     # NEW: Subdivided inference tiles
+│   │       ├── tile_0/
+│   │       │   ├── inf_tile_0_nuclei_15_filtered.png
+│   │       │   ├── inf_tile_1_nuclei_8_filtered.png
+│   │       │   └── inference_mosaic.png
+│   │       └── tile_1/
+│   │           └── ...
 │   ├── mask_1_contour_2/
-│   │   └── tile_mosaic.png      # Processed tiles for contour 2
-│   └── results.json             # Numerical results
+│   │   └── ...
+│   └── results.json             # Enhanced results with tissue filtering
 ├── sample2/
 │   └── ...
 ├── summary.csv                  # Summary statistics for all slides
@@ -191,11 +224,20 @@ results/
 └── configuration.json           # Analysis parameters used
 ```
 
-**Key Output Metrics**:
-- **Total nuclei count** per slide and contour
-- **Nuclei density** (nuclei per mm²)
-- **Tissue area** analyzed (mm²)
+**Enhanced Output Metrics**:
+- **Total nuclei count** per slide and contour (tissue-filtered)
+- **Nuclei density** (nuclei per mm²) in allowed tissue areas
+- **Tissue area** analyzed (mm²) with filtering breakdown
+- **Tissue filtering mode** and description
+- **Inference tiles statistics** (total/valid counts)
 - **Confidence scores** and processing statistics
+
+**NEW: Tile Mosaic Visualizations**:
+- **Gray overlay (30% alpha)**: Shows excluded structural tissue (Mode 1)
+- **Blue overlay (30% alpha)**: Shows included dermis+hypodermis (Mode 2)
+- **Black background**: Smooth BKG segmentation labels instead of blue
+- **Green overlays**: Detected nuclei locations
+- **Individual inference tiles**: Saved with nuclei counts in filenames
 
 ## 🎨 Skin Tissue Segmentation
 
@@ -236,7 +278,7 @@ Segmentation analysis generates:
 
 ## 🔧 Configuration Parameters
 
-### Cellular Density Analysis
+### Enhanced Cellular Density Analysis
 
 | Parameter | Description | Default | Range |
 |-----------|-------------|---------|--------|
@@ -246,6 +288,17 @@ Segmentation analysis generates:
 | `tile_size` | Analysis tile size (pixels) | 128 | 64-512 |
 | `contour_level` | Image pyramid level | 6 | 0-8 |
 | `min_coverage_fraction` | Min tissue per tile | 0.25 | 0.1-0.8 |
+| **`tissue_filter`** | **Tissue filtering mode** | **none** | **none, exclude-structural, dermis-hypodermis-only** |
+| **`segmentation_model`** | **HF model for segmentation** | **None** | **efficientnet-b3, efficientnet-b5, gigapath** |
+| **`inference_tile_size`** | **Inference subdivision size** | **256** | **128-512** |
+
+### NEW: Tissue Filtering Modes
+
+| Mode | Parameter | Included Tissues | Excluded Tissues | Overlay Color |
+|------|-----------|------------------|------------------|---------------|
+| 0 | `none` | All tissue types | Background only | None |
+| 1 | `exclude-structural` | INF, FOL, RET, PAP, EPI, BCC, SCC, IEC | GLD, KER, HYP, BKG | Gray (30% alpha) |
+| 2 | `dermis-hypodermis-only` | RET, PAP, EPI | All others | Blue (30% alpha) |
 
 ### Key Algorithms
 
@@ -254,6 +307,9 @@ Segmentation analysis generates:
 3. **R+B Channel Filtering**: Reduces background noise using color information
 4. **Adaptive Thresholding**: Handles varying illumination across slides
 5. **Morphological Operations**: Cleans up segmentation artifacts
+6. **NEW: Segmentation-Based Filtering**: Uses tissue segmentation for targeted counting
+7. **NEW: Mask Intersection**: Bitwise operations for nuclei-tissue filtering
+8. **NEW: Inference Tile Subdivision**: Subdivides tiles for improved processing accuracy
 
 ## 📊 Performance Considerations
 
@@ -275,43 +331,141 @@ Segmentation analysis generates:
 
 ## 🧪 Example Workflows
 
-### Workflow 1: Transplant Rejection Monitoring
+### Workflow 1: Transplant Rejection Monitoring with Tissue Filtering
 ```bash
 # 1. Place NDPI files from patient biopsies
 mkdir patient_samples
 cp *.ndpi patient_samples/
 
-# 2. Run cellular density analysis
+# 2. Run cellular density analysis with dermis+hypodermis filtering
 python backend/wsi_processing/main.py \
   --input-dir patient_samples \
-  --output-dir rejection_analysis \
+  --output-dir rejection_analysis_filtered \
+  --tissue-filter dermis-hypodermis-only \
+  --segmentation-model efficientnet-b3 \
   --config transplant_monitoring_config.yaml
 
-# 3. Review results in rejection_analysis/summary.csv
+# 3. Compare with unfiltered analysis
+python backend/wsi_processing/main.py \
+  --input-dir patient_samples \
+  --output-dir rejection_analysis_baseline \
+  --tissue-filter none
+
+# 4. Review results in rejection_analysis_*/summary.csv
 ```
 
-### Workflow 2: Comprehensive Skin Analysis
+### Workflow 2: Comprehensive Skin Analysis with Multiple Filtering Modes
 ```bash
-# 1. Run both cellular density and tissue segmentation
-python backend/wsi_processing/main.py --input-dir skin_samples --output-dir analysis
+# 1. Run analysis with all three filtering modes
+python backend/wsi_processing/main.py \
+  --input-file "skin_sample.ndpi" \
+  --output-dir analysis_no_filter \
+  --tissue-filter none \
+  --segmentation-model efficientnet-b5
 
-# 2. Extract skin patches and run segmentation
-python backend/skin_seg_inference.py skin_patches/ --batch --model_name efficientnet-b5
+python backend/wsi_processing/main.py \
+  --input-file "skin_sample.ndpi" \
+  --output-dir analysis_exclude_structural \
+  --tissue-filter exclude-structural \
+  --segmentation-model efficientnet-b5
 
-# 3. Combine results for comprehensive analysis
+python backend/wsi_processing/main.py \
+  --input-file "skin_sample.ndpi" \
+  --output-dir analysis_dermis_hypodermis \
+  --tissue-filter dermis-hypodermis-only \
+  --segmentation-model efficientnet-b5
+
+# 2. Compare nuclei density results across filtering modes
+# 3. Analyze inference tiles for detailed cell distribution
+```
+
+### Workflow 3: NDPI Example File Processing
+```bash
+# Process the example NDPI file with dermis+hypodermis filtering
+cd /tmp/CellularDensity/backend
+
+python wsi_processing/main.py \
+  --input-file "/tmp/CellularDensity/04_skin D23-031729 B1-1 - 2024-02-22 15.24.47_Skin 3A.ndpi" \
+  --output-dir "/tmp/CellularDensity/results_dermis_hypodermis" \
+  --tissue-filter dermis-hypodermis-only \
+  --segmentation-model efficientnet-b3 \
+  --tile-size 128 \
+  --min-coverage-fraction 0.5 \
+  --log-level INFO
 ```
 
 ## 🎯 Clinical Applications
 
-### Transplant Monitoring
-- **Rejection Assessment**: Monitor cellular density changes over time
-- **Treatment Response**: Track nuclei count changes following interventions
-- **Comparative Analysis**: Compare pre/post treatment samples
+### Enhanced Transplant Monitoring
+- **Targeted Rejection Assessment**: Monitor cellular density in specific tissue layers (dermis/hypodermis)
+- **Tissue-Specific Analysis**: Focus on clinically relevant tissue types while excluding artifacts
+- **Treatment Response**: Track nuclei count changes in filtered tissue areas following interventions
+- **Comparative Analysis**: Compare pre/post treatment samples with consistent tissue filtering
+- **Improved Accuracy**: Eliminate structural artifacts (glands, keratin) that may confound results
 
-### Dermatopathology
-- **Tissue Classification**: Automated identification of skin structures
-- **Cancer Detection**: Identify and quantify malignant regions
-- **Research Applications**: Standardized tissue analysis for studies
+### Advanced Dermatopathology
+- **Precision Tissue Classification**: Automated identification with tissue-specific counting
+- **Cancer Detection**: Enhanced detection in dermis/hypodermis while excluding background structures
+- **Research Applications**: Standardized tissue analysis with reproducible filtering protocols
+- **Multi-Modal Analysis**: Combine segmentation and cell counting for comprehensive assessment
+
+## 🎯 NEW: Advanced Tissue Filtering Guide
+
+### Understanding Tissue Filtering Modes
+
+**Mode 0 (None) - Default Behavior**
+```bash
+--tissue-filter none
+```
+- Counts nuclei in all tissue areas (excludes background only)
+- No visual overlays applied
+- Fastest processing (no segmentation required)
+- Use for: General analysis, baseline comparisons
+
+**Mode 1 (Exclude Structural) - Gray Overlay**
+```bash
+--tissue-filter exclude-structural --segmentation-model efficientnet-b3
+```
+- Excludes: GLD (glands), KER (keratin), HYP (hypodermis)
+- Includes: INF, FOL, RET, PAP, EPI, BCC, SCC, IEC
+- Gray overlay (30% alpha) shows excluded areas
+- Use for: Focusing on active tissue, excluding structural artifacts
+
+**Mode 2 (Dermis+Hypodermis Only) - Blue Overlay**
+```bash
+--tissue-filter dermis-hypodermis-only --segmentation-model efficientnet-b3
+```
+- Includes ONLY: RET (reticular), PAP (papillary), EPI (epidermis)
+- Excludes: All other tissue types
+- Blue overlay (30% alpha) shows included areas
+- Use for: Transplant monitoring, dermal-specific analysis
+
+### Choosing the Right Segmentation Model
+
+| Model | Size | Speed | Accuracy | Use Case |
+|-------|------|-------|----------|----------|
+| `efficientnet-b3` | ~53MB | Fast | Good | General analysis, quick results |
+| `efficientnet-b5` | ~126MB | Medium | Better | High-accuracy requirements |
+| `gigapath` | Variable | Slow | Best | Research, maximum accuracy |
+
+### Output Interpretation
+
+**Enhanced Statistics**:
+```json
+{
+  "total_nuclei_count": 1247,
+  "nuclei_density_per_mm2": 892.3,
+  "tissue_filter_mode": "DERMIS_HYPODERMIS_ONLY",
+  "tissue_filter_description": "Counting only in dermis+hypodermis (RET+PAP+EPI) tissue",
+  "inference_tiles_total": 48,
+  "inference_tiles_valid": 32
+}
+```
+
+**Visual Outputs**:
+- **Main tile mosaic**: Shows tissue overlays and nuclei detection
+- **Inference tiles**: Individual subdivided tiles with nuclei counts
+- **Inference mosaics**: Reconstructed view of subdivided processing
 
 ## 🐛 Troubleshooting
 
@@ -336,6 +490,17 @@ python backend/skin_seg_inference.py skin_patches/ --batch --model_name efficien
    - Adjust `threshold_param` (try 11, 15, 17)
    - Modify `rpb_threshold_percentile` (try 40-60)
    - Check image quality and staining
+
+5. **NEW: Tissue filtering issues**:
+   - **No segmentation model**: Ensure `--segmentation-model` is specified for filtering
+   - **Poor tissue segmentation**: Try different models (efficientnet-b5 for better accuracy)
+   - **No overlays visible**: Check if tissue filtering mode is set correctly
+   - **Low nuclei counts**: Verify filtering mode matches your analysis goals
+
+6. **NEW: Inference tile problems**:
+   - **Empty inference tiles**: Reduce `min_coverage_fraction` or `inference_tile_size`
+   - **Too many tiles**: Increase `inference_tile_size` for fewer subdivisions
+   - **Memory issues**: Reduce `inference_tile_size` or process fewer tiles
 
 ### Getting Help
 
