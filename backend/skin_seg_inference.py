@@ -3,15 +3,32 @@
 Skin Segmentation Inference Script
 ==================================
 
-Complete inference script for EfficientNet skin histopathology segmentation models.
+Complete inference script for skin histopathology segmentation models.
 Supports batch processing, visualization, and quantitative analysis.
+Auto-downloads models from HuggingFace repository: JoshuaFreeman/skin_seg
 
-Models available at: https://huggingface.co/JoshuaFreeman/skin_seg
+Key Features:
+- Auto-detects backbone architecture from model names
+- Downloads any model from HuggingFace JoshuaFreeman/skin_seg repository
+- Generates 3 key tissue masks: Epidermis, Dermis (RET+PAP), Structural (GLD+KER+HYP)
+- Comprehensive 6-panel visualizations with statistics
+- Individual binary mask export
+- Batch processing support
 
-Usage:
-    python skin_seg_inference.py image.jpg
-    python skin_seg_inference.py --batch /path/to/images/
-    python skin_seg_inference.py image.jpg --model efficientnet-b5 --visualize
+Usage Examples:
+    # List available models:
+    python skin_seg_inference.py --list_models
+    
+    # Use any HuggingFace model:
+    python skin_seg_inference.py image.jpg --model_name efficientnet-b3
+    python skin_seg_inference.py image.jpg --model_name efficientnet-b5
+    python skin_seg_inference.py image.jpg --model_name gigapath
+    
+    # Use local model:
+    python skin_seg_inference.py image.jpg --model_path ./my_model.pt
+    
+    # Batch processing:
+    python skin_seg_inference.py /path/to/images/ --batch --model_name efficientnet-b5
 """
 
 import argparse
@@ -65,17 +82,30 @@ FULL_CLASS_NAMES = {
 class SkinSegmentationModel:
     """Wrapper class for skin segmentation models."""
     
-    def __init__(self, model_path: str, backbone: str = "efficientnet-b3", device: str = "auto"):
+    def __init__(self, model_path: str = None, model_name: str = None, backbone: str = None, device: str = "auto"):
         """
         Initialize the segmentation model.
         
         Args:
-            model_path: Path to the trained model weights
-            backbone: Backbone architecture (efficientnet-b3 or efficientnet-b5)
+            model_path: Local path to model weights (optional if model_name provided)
+            model_name: HuggingFace model name (e.g. "efficientnet-b3", "gigapath", etc.)
+            backbone: Backbone architecture (auto-detected from model_name if not provided)
             device: Device to run inference on ("auto", "cuda", or "cpu")
         """
-        self.backbone = backbone
         self.device = self._get_device(device)
+        
+        # Auto-detect backbone from model name/path if not provided
+        if backbone is None:
+            backbone = self._detect_backbone(model_path, model_name)
+        
+        self.backbone = backbone
+        
+        # Get model path (download from HF if needed)
+        if model_path is None and model_name is not None:
+            model_path = self._download_from_hf(model_name)
+        elif model_path is None:
+            raise ValueError("Either model_path or model_name must be provided")
+            
         self.model = self._load_model(model_path)
         self.transform = self._get_transform()
         
@@ -84,6 +114,95 @@ class SkinSegmentationModel:
         if device == "auto":
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
         return torch.device(device)
+    
+    def _detect_backbone(self, model_path: str = None, model_name: str = None) -> str:
+        """Auto-detect backbone architecture from model name or path."""
+        source = model_name or model_path or ""
+        source = source.lower()
+        
+        # Check for specific backbones
+        if "efficientnet-b3" in source or "efficientnet_b3" in source:
+            return "efficientnet-b3"
+        elif "efficientnet-b5" in source or "efficientnet_b5" in source:
+            return "efficientnet-b5"
+        elif "efficientnet-b7" in source or "efficientnet_b7" in source:
+            return "efficientnet-b7"
+        elif "resnet50" in source:
+            return "resnet50"
+        elif "resnet34" in source:
+            return "resnet34"
+        elif "gigapath" in source:
+            return "gigapath_vitl"
+        elif "dinov2" in source:
+            if "base" in source:
+                return "vit_base_patch14_dinov2"
+            elif "large" in source:
+                return "vit_large_patch14_dinov2"
+            elif "small" in source:
+                return "vit_small_patch14_dinov2"
+            else:
+                return "vit_base_patch14_dinov2"  # default
+        else:
+            # Default fallback
+            print(f"⚠️  Could not auto-detect backbone from '{source}', using efficientnet-b3")
+            return "efficientnet-b3"
+    
+    def _download_from_hf(self, model_name: str) -> str:
+        """Download model from HuggingFace repository."""
+        try:
+            from huggingface_hub import hf_hub_download, list_repo_files
+            
+            # List available files in the repository
+            try:
+                repo_files = list_repo_files("JoshuaFreeman/skin_seg")
+                model_files = [f for f in repo_files if f.endswith('.pt')]
+                print(f"📋 Available models in JoshuaFreeman/skin_seg: {model_files}")
+            except Exception as e:
+                print(f"⚠️  Could not list repo files: {e}")
+                model_files = []
+            
+            # Try to find exact match first
+            target_file = None
+            for pattern in [f"{model_name}_unet_best.pt", f"{model_name}.pt", model_name]:
+                if pattern in model_files:
+                    target_file = pattern
+                    break
+            
+            # If no exact match, try partial matching
+            if target_file is None:
+                for file in model_files:
+                    if model_name.lower() in file.lower():
+                        target_file = file
+                        break
+            
+            # Fallback to common names
+            if target_file is None:
+                if "efficientnet-b3" in model_name or "b3" in model_name:
+                    target_file = "efficientnet-b3_unet_best.pt"
+                elif "efficientnet-b5" in model_name or "b5" in model_name:
+                    target_file = "efficientnet-b5_unet_best.pt"
+                elif "gigapath" in model_name.lower():
+                    target_file = "gigapath_unet_best.pt"
+                else:
+                    target_file = model_files[0] if model_files else "efficientnet-b3_unet_best.pt"
+            
+            print(f"📥 Downloading {target_file} from JoshuaFreeman/skin_seg...")
+            
+            model_path = hf_hub_download(
+                repo_id="JoshuaFreeman/skin_seg",
+                filename=target_file,
+                cache_dir="./models"
+            )
+            
+            print(f"✅ Downloaded model: {model_path}")
+            return model_path
+            
+        except ImportError:
+            print("❌ huggingface_hub not installed. Install with: pip install huggingface_hub")
+            raise
+        except Exception as e:
+            print(f"❌ Error downloading model '{model_name}': {e}")
+            raise
     
     def _load_model(self, model_path: str) -> torch.nn.Module:
         """Load the segmentation model."""
@@ -402,56 +521,79 @@ def save_batch_summary(all_stats: List[Dict[str, float]], output_dir: str) -> No
     print(f"📊 Batch summary saved to: {csv_path}")
 
 
-def download_model_from_hf(model_name: str) -> str:
-    """Download model from Hugging Face Hub."""
-    try:
-        from huggingface_hub import hf_hub_download
-        
-        model_path = hf_hub_download(
-            repo_id="JoshuaFreeman/skin_seg",
-            filename=f"{model_name}_unet_best.pt",
-            cache_dir="./models"
-        )
-        print(f"📥 Downloaded model from Hugging Face: {model_path}")
-        return model_path
-        
-    except ImportError:
-        print("❌ huggingface_hub not installed. Install with: pip install huggingface_hub")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Error downloading model: {e}")
-        sys.exit(1)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Skin Histopathology Segmentation Inference")
+    parser = argparse.ArgumentParser(
+        description="Skin Histopathology Segmentation Inference",
+        epilog="""
+Examples:
+  # Use any model from HuggingFace JoshuaFreeman/skin_seg:
+  python skin_seg_inference.py image.jpg --model_name efficientnet-b3
+  python skin_seg_inference.py image.jpg --model_name efficientnet-b5
+  python skin_seg_inference.py image.jpg --model_name gigapath
+  
+  # Use local model file:
+  python skin_seg_inference.py image.jpg --model_path ./my_model.pt --backbone resnet50
+  
+  # Batch processing:
+  python skin_seg_inference.py /path/to/images/ --batch --model_name efficientnet-b5
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
     parser.add_argument("input", help="Input image file or directory for batch processing")
-    parser.add_argument("--model", default="efficientnet-b3", 
-                       choices=["efficientnet-b3", "efficientnet-b5"],
-                       help="Model backbone to use")
-    parser.add_argument("--model_path", help="Path to model weights (auto-downloads if not provided)")
+    
+    # Model specification options
+    parser.add_argument("--model_name", help="Model name from JoshuaFreeman/skin_seg (e.g., 'efficientnet-b3', 'efficientnet-b5', 'gigapath')")
+    parser.add_argument("--model_path", help="Local path to model weights")
+    parser.add_argument("--backbone", help="Backbone architecture (auto-detected if not provided)")
+    
+    # Processing options
     parser.add_argument("--output_dir", default="results", help="Output directory for results")
     parser.add_argument("--batch", action="store_true", help="Process all images in input directory")
     parser.add_argument("--no_visualize", action="store_true", help="Skip visualization generation")
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"],
                        help="Device to use for inference")
+    parser.add_argument("--list_models", action="store_true", help="List available models in HuggingFace repo and exit")
     
     args = parser.parse_args()
     
-    # Determine model path
-    if args.model_path:
-        model_path = args.model_path
-    else:
-        # Try local file first, then download
-        local_path = f"{args.model}_unet_best.pt"
-        if os.path.exists(local_path):
-            model_path = local_path
-        else:
-            model_path = download_model_from_hf(args.model)
+    # List models and exit if requested
+    if args.list_models:
+        try:
+            from huggingface_hub import list_repo_files
+            repo_files = list_repo_files("JoshuaFreeman/skin_seg")
+            model_files = [f for f in repo_files if f.endswith('.pt')]
+            print("📋 Available models in JoshuaFreeman/skin_seg:")
+            for model in sorted(model_files):
+                print(f"   • {model}")
+            print(f"\n💡 Usage: python skin_seg_inference.py image.jpg --model_name efficientnet-b3")
+        except Exception as e:
+            print(f"❌ Error listing models: {e}")
+        return
+    
+    # Validate arguments
+    if not args.model_path and not args.model_name:
+        # Default to efficientnet-b3 if nothing specified
+        args.model_name = "efficientnet-b3"
+        print("💡 No model specified, defaulting to efficientnet-b3")
     
     # Initialize model
-    print(f"🚀 Initializing {args.model} model...")
-    model = SkinSegmentationModel(model_path, args.model, args.device)
+    if args.model_name:
+        print(f"🚀 Initializing model from HuggingFace: {args.model_name}")
+        model = SkinSegmentationModel(
+            model_name=args.model_name, 
+            backbone=args.backbone, 
+            device=args.device
+        )
+    else:
+        print(f"🚀 Initializing model from local file: {args.model_path}")
+        model = SkinSegmentationModel(
+            model_path=args.model_path, 
+            backbone=args.backbone, 
+            device=args.device
+        )
     
     # Process input
     if args.batch or os.path.isdir(args.input):
