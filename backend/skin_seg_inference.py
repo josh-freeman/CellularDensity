@@ -173,27 +173,46 @@ def calculate_tissue_stats(mask: np.ndarray) -> Dict[str, float]:
 
 
 def create_overlay_visualization(image: Image.Image, mask: np.ndarray) -> Image.Image:
-    """Create specialized tissue overlay visualization."""
+    """Create specialized tissue overlay visualization with key masks."""
     # Convert to numpy for processing
     img_array = np.array(image.resize((mask.shape[1], mask.shape[0])))
     overlay = img_array.copy()
     
     # Create colored overlays with transparency
-    alpha = 0.6
+    alpha = 0.7
     
-    # Epithelial (red)
+    # Epidermis (red) - Class 6
     epi_mask = mask == 6
     overlay[epi_mask] = overlay[epi_mask] * (1 - alpha) + np.array([255, 0, 0]) * alpha
     
-    # Dermis (blue) - Reticular + Papillary
+    # Dermis (blue) - Reticular + Papillary (Classes 4, 5)
     dermis_mask = (mask == 4) | (mask == 5)
     overlay[dermis_mask] = overlay[dermis_mask] * (1 - alpha) + np.array([0, 0, 255]) * alpha
     
-    # Structural (green) - Gland + Keratin + Hypodermis
+    # Structural (green) - Gland + Keratin + Hypodermis (Classes 0, 7, 3)
     struct_mask = (mask == 0) | (mask == 7) | (mask == 3)
     overlay[struct_mask] = overlay[struct_mask] * (1 - alpha) + np.array([0, 255, 0]) * alpha
     
     return Image.fromarray(overlay.astype(np.uint8))
+
+
+def create_individual_mask_visualization(mask: np.ndarray, original_shape: Tuple[int, int]) -> Dict[str, np.ndarray]:
+    """Create individual binary masks for key tissue types."""
+    masks = {}
+    
+    # Epidermis mask (Class 6)
+    masks['epidermis'] = (mask == 6).astype(np.uint8) * 255
+    
+    # Dermis mask (Classes 4, 5: RET + PAP)
+    masks['dermis'] = ((mask == 4) | (mask == 5)).astype(np.uint8) * 255
+    
+    # Structural mask (Classes 0, 7, 3: GLD + KER + HYP)
+    masks['structural'] = ((mask == 0) | (mask == 7) | (mask == 3)).astype(np.uint8) * 255
+    
+    # Non-structural mask (everything except GLD + KER + HYP)
+    masks['non_structural'] = (~((mask == 0) | (mask == 7) | (mask == 3))).astype(np.uint8) * 255
+    
+    return masks
 
 
 def create_comprehensive_visualization(
@@ -232,7 +251,7 @@ def create_comprehensive_visualization(
     # 4. Specialized Overlay
     overlay_img = create_overlay_visualization(image, pred_mask)
     axes[1, 0].imshow(overlay_img)
-    axes[1, 0].set_title('Tissue Overlay\n(Red: Epithelial, Blue: Dermis, Green: Structural)')
+    axes[1, 0].set_title('Key Tissue Masks\n(Red: Epidermis, Blue: Dermis, Green: Structural)')
     axes[1, 0].axis('off')
     
     # 5. Class Distribution
@@ -253,28 +272,27 @@ def create_comprehensive_visualization(
     # 6. Summary Statistics
     axes[1, 2].axis('off')
     summary_text = f"""
-Summary Statistics
+KEY TISSUE MASKS:
 
-Key Tissue Groups:
-• Epithelial: {stats['Epithelial_total']:.1f}%
-• Dermis: {stats['Dermis_total']:.1f}%
-• Structural: {stats['Structural_total']:.1f}%
-• Cancer: {stats['Cancer_total']:.1f}%
+🔴 EPIDERMIS: {stats['EPI']:.1f}%
+   (Class 6 - Epidermis)
 
-Individual Classes:
-• Epidermis: {stats['EPI']:.1f}%
-• Reticular: {stats['RET']:.1f}%
-• Papillary: {stats['PAP']:.1f}%
-• Gland: {stats['GLD']:.1f}%
-• Keratin: {stats['KER']:.1f}%
-• Background: {stats['BKG']:.1f}%
+🔵 DERMIS: {stats['Dermis_total']:.1f}%
+   • Reticular: {stats['RET']:.1f}%
+   • Papillary: {stats['PAP']:.1f}%
 
-Cancer Types:
-• BCC: {stats['BCC']:.1f}%
-• SCC: {stats['SCC']:.1f}%
-• IEC: {stats['IEC']:.1f}%
+🟢 STRUCTURAL: {stats['Structural_total']:.1f}%
+   • Gland: {stats['GLD']:.1f}%
+   • Keratin: {stats['KER']:.1f}%
+   • Hypodermis: {stats['HYP']:.1f}%
 
-Mean Confidence: {confidence_map.mean():.3f}
+OTHER CLASSES:
+   • Cancer Total: {stats['Cancer_total']:.1f}%
+   • Inflammation: {stats['INF']:.1f}%
+   • Follicle: {stats['FOL']:.1f}%
+   • Background: {stats['BKG']:.1f}%
+
+Confidence: {confidence_map.mean():.3f}
 """
     axes[1, 2].text(0.05, 0.95, summary_text, transform=axes[1, 2].transAxes,
                    fontsize=10, verticalalignment='top', fontfamily='monospace')
