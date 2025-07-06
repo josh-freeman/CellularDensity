@@ -7,8 +7,16 @@ import math
 import os
 from PIL import Image
 import logging
+from enum import Enum
 
 from ..nuclei.detector import NucleiDetector
+
+
+class TissueFilterMode(Enum):
+    """Tissue filtering modes for cell counting."""
+    NONE = 0          # No filtering, count all tissue
+    EXCLUDE_STRUCTURAL = 1  # Exclude structural tissue (GLD+KER+HYP)
+    DERMIS_HYPODERMIS_ONLY = 2  # Only count in dermis+hypodermis (RET+PAP+EPI)
 
 
 class TileInfo:
@@ -31,11 +39,13 @@ class TileInfo:
 class TileResult:
     """Container for tile processing results."""
     def __init__(self, tile_info: TileInfo, image: Optional[np.ndarray] = None,
-                 nuclei_count: int = 0, area_mm2: float = 0.0):
+                 nuclei_count: int = 0, area_mm2: float = 0.0, 
+                 inference_tiles: Optional[List[Dict]] = None):
         self.tile_info = tile_info
         self.image = image
         self.nuclei_count = nuclei_count
         self.area_mm2 = area_mm2
+        self.inference_tiles = inference_tiles or []
 
 
 class TilingManager:
@@ -44,16 +54,25 @@ class TilingManager:
     def __init__(self, 
                  tile_size: int = 128,
                  min_coverage_fraction: float = 0.5,
-                 nuclei_detector: Optional[NucleiDetector] = None):
+                 nuclei_detector: Optional[NucleiDetector] = None,
+                 inference_tile_size: int = 256,
+                 segmentation_model = None,
+                 tissue_filter_mode: TissueFilterMode = TissueFilterMode.NONE):
         """
         Args:
             tile_size: Size of tiles in pixels (at level 0)
             min_coverage_fraction: Minimum fraction of tile that must be inside ROI
             nuclei_detector: NucleiDetector instance for counting nuclei
+            inference_tile_size: Size of tiles for inference processing
+            segmentation_model: Model for generating BKG segmentation labels
+            tissue_filter_mode: Tissue filtering mode for cell counting
         """
         self.tile_size = tile_size
         self.min_coverage_fraction = min_coverage_fraction
         self.nuclei_detector = nuclei_detector or NucleiDetector()
+        self.inference_tile_size = inference_tile_size
+        self.segmentation_model = segmentation_model
+        self.tissue_filter_mode = tissue_filter_mode
         self.logger = logging.getLogger(__name__)
         
     def tile_region(self, 
@@ -119,7 +138,11 @@ class TilingManager:
             "total_area_mm2": total_area_mm2,
             "nuclei_density_per_mm2": total_nuclei / total_area_mm2 if total_area_mm2 > 0 else 0,
             "tiles_processed": len(results),
-            "tiles_with_tissue": sum(1 for r in results if r.image is not None)
+            "tiles_with_tissue": sum(1 for r in results if r.image is not None),
+            "inference_tiles_total": sum(len(r.inference_tiles) for r in results),
+            "inference_tiles_valid": sum(sum(1 for inf in r.inference_tiles if inf['valid']) for r in results),
+            "tissue_filter_mode": self.tissue_filter_mode.name,
+            "tissue_filter_description": self._get_tissue_filter_description()
         }
     
     def _generate_tile_infos(self, x0: int, y0: int, w0: int, h0: int, 
@@ -230,17 +253,70 @@ class TilingManager:
             )
             tile_img[bkg_resized == 255] = (0, 0, 255)  # Blue for background
         
-        # Detect nuclei
-        gray_tile = cv2.cvtColor(tile_img, cv2.COLOR_RGB2GRAY)
-        nuclei_count, nuclei_mask = self.nuclei_detector.detect_nuclei(tile_img, gray_tile)
+        # Subdivide tile for inference if needed
+        inference_tiles = []
+        total_nuclei = 0
         
-        # Overlay nuclei
-        tile_img[nuclei_mask == 255] = (0, 255, 0)  # Green for nuclei
+        if self.segmentation_model is not None:
+            # Generate BKG mask from segmentation
+            segmentation_mask = self._generate_segmentation_mask(tile_img)
+            bkg_mask = (segmentation_mask == 8).astype(np.uint8) * 255  # Class 8 is BKG
+            
+            # Create tissue filter mask
+            tissue_filter_mask = self._create_tissue_filter_mask(segmentation_mask)
+            
+            # Subdivide tile for inference
+            inference_tiles = self._subdivide_tile_for_inference(tile_img, bkg_mask, tissue_filter_mask)
+            
+            # Run cell counting on each inference tile
+            for inf_tile in inference_tiles:
+                if inf_tile['valid']:
+                    gray_inf_tile = cv2.cvtColor(inf_tile['image'], cv2.COLOR_RGB2GRAY)
+                    nuclei_count, nuclei_mask = self.nuclei_detector.detect_nuclei(inf_tile['image'], gray_inf_tile)
+                    
+                    # Apply tissue filtering to nuclei mask
+                    if inf_tile['tissue_filter_mask'] is not None:
+                        # Only count nuclei in allowed tissue areas
+                        filtered_nuclei_mask = cv2.bitwise_and(nuclei_mask, inf_tile['tissue_filter_mask'])
+                        # Recalculate nuclei count based on filtered mask
+                        filtered_nuclei_count = len(np.unique(cv2.connectedComponents(filtered_nuclei_mask)[1])) - 1  # -1 to exclude background
+                        inf_tile['nuclei_count'] = max(0, filtered_nuclei_count)
+                        inf_tile['nuclei_mask'] = filtered_nuclei_mask
+                    else:
+                        inf_tile['nuclei_count'] = nuclei_count
+                        inf_tile['nuclei_mask'] = nuclei_mask
+                    
+                    total_nuclei += inf_tile['nuclei_count']
+                    
+                    # Overlay nuclei on inference tile
+                    inf_tile['image'][inf_tile['nuclei_mask'] == 255] = (0, 255, 0)  # Green for nuclei
+                    
+                    # Apply BKG background from segmentation
+                    inf_tile_bkg = inf_tile['bkg_mask']
+                    inf_tile['image'][inf_tile_bkg == 255] = (0, 0, 0)  # Black for BKG background
+            
+            # Update main tile with smooth BKG background
+            tile_img[bkg_mask == 255] = (0, 0, 0)  # Black for BKG background
+            
+            # Apply tissue filtering overlay to main tile
+            tile_img = self._apply_tissue_overlay(tile_img, segmentation_mask)
+            
+        else:
+            # Fallback to original nuclei detection
+            gray_tile = cv2.cvtColor(tile_img, cv2.COLOR_RGB2GRAY)
+            nuclei_count, nuclei_mask = self.nuclei_detector.detect_nuclei(tile_img, gray_tile)
+            total_nuclei = nuclei_count
+            
+            # Overlay nuclei
+            tile_img[nuclei_mask == 255] = (0, 255, 0)  # Green for nuclei
+            
+            # Use existing background mask
+            tile_img[bkg_resized == 255] = (0, 0, 255)  # Blue for background
         
         # Calculate area
         area_mm2 = inside_count * scale_factor * scale_factor * mpp_x * mpp_y * 1e-6
         
-        return TileResult(tile_info, tile_img, nuclei_count, area_mm2)
+        return TileResult(tile_info, tile_img, total_nuclei, area_mm2, inference_tiles)
     
     def _calculate_region_area_mm2(self, mask_slice: np.ndarray,
                                  scale_factor: float,
@@ -272,6 +348,9 @@ class TilingManager:
         output_path = os.path.join(output_dir, "tile_mosaic.png")
         Image.fromarray(mosaic).save(output_path)
         self.logger.info(f"Saved mosaic to {output_path}")
+        
+        # Save inference tiles if they exist
+        self._save_inference_tiles(results, output_dir)
     
     def _create_mosaic(self, tile_grid: List[List[Optional[np.ndarray]]]) -> np.ndarray:
         """Create mosaic from tile grid."""
@@ -292,3 +371,224 @@ class TilingManager:
                     mosaic[y0:y0 + h, x0:x0 + w] = tile_img
                     
         return mosaic
+    
+    def _generate_segmentation_mask(self, image: np.ndarray) -> np.ndarray:
+        """Generate segmentation mask using the segmentation model."""
+        if self.segmentation_model is None:
+            return np.zeros(image.shape[:2], dtype=np.uint8)
+        
+        try:
+            # Convert to PIL Image for model inference
+            pil_image = Image.fromarray(image)
+            
+            # Run segmentation inference
+            result = self.segmentation_model.predict(pil_image)
+            # Handle both single mask and tuple (mask, confidence) returns
+            if isinstance(result, tuple):
+                mask = result[0]  # Get mask from tuple
+            else:
+                mask = result
+            
+            # Ensure mask is the right size
+            if mask.shape[:2] != image.shape[:2]:
+                mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+            
+            return mask
+        except Exception as e:
+            self.logger.warning(f"Segmentation inference failed: {e}")
+            return np.zeros(image.shape[:2], dtype=np.uint8)
+    
+    def _subdivide_tile_for_inference(self, tile_image: np.ndarray, bkg_mask: np.ndarray, tissue_filter_mask: np.ndarray = None) -> List[Dict]:
+        """Subdivide a tile into inference-sized tiles."""
+        h, w = tile_image.shape[:2]
+        inference_tiles = []
+        
+        # Calculate number of inference tiles needed
+        tiles_x = max(1, w // self.inference_tile_size)
+        tiles_y = max(1, h // self.inference_tile_size)
+        
+        # Calculate actual tile sizes (may be smaller than inference_tile_size)
+        tile_w = w // tiles_x
+        tile_h = h // tiles_y
+        
+        for row in range(tiles_y):
+            for col in range(tiles_x):
+                # Calculate tile boundaries
+                x0 = col * tile_w
+                y0 = row * tile_h
+                x1 = min((col + 1) * tile_w, w)
+                y1 = min((row + 1) * tile_h, h)
+                
+                # Extract tile
+                tile_img = tile_image[y0:y1, x0:x1].copy()
+                tile_bkg = bkg_mask[y0:y1, x0:x1].copy()
+                
+                # Extract tissue filter mask if provided
+                tile_tissue_filter = None
+                if tissue_filter_mask is not None:
+                    tile_tissue_filter = tissue_filter_mask[y0:y1, x0:x1].copy()
+                
+                # Check if tile has enough tissue (not mostly background)
+                tissue_pixels = np.sum(tile_bkg == 0)  # Non-background pixels
+                total_pixels = tile_bkg.size
+                tissue_fraction = tissue_pixels / total_pixels if total_pixels > 0 else 0
+                
+                # Additional check for tissue filter if applicable
+                if tile_tissue_filter is not None:
+                    allowed_tissue_pixels = np.sum(tile_tissue_filter == 255)
+                    allowed_tissue_fraction = allowed_tissue_pixels / total_pixels if total_pixels > 0 else 0
+                    # Use the more restrictive fraction
+                    tissue_fraction = min(tissue_fraction, allowed_tissue_fraction)
+                
+                is_valid = tissue_fraction >= self.min_coverage_fraction
+                
+                inference_tiles.append({
+                    'row': row,
+                    'col': col,
+                    'x0': x0,
+                    'y0': y0,
+                    'x1': x1,
+                    'y1': y1,
+                    'image': tile_img,
+                    'bkg_mask': tile_bkg,
+                    'tissue_filter_mask': tile_tissue_filter,
+                    'tissue_fraction': tissue_fraction,
+                    'valid': is_valid,
+                    'nuclei_count': 0,
+                    'nuclei_mask': None
+                })
+        
+        return inference_tiles
+    
+    def _save_inference_tiles(self, results: List[TileResult], output_dir: str):
+        """Save inference tiles as individual images and create detailed mosaics."""
+        if not results or not any(r.inference_tiles for r in results):
+            return
+            
+        inference_dir = os.path.join(output_dir, "inference_tiles")
+        os.makedirs(inference_dir, exist_ok=True)
+        
+        for tile_idx, result in enumerate(results):
+            if not result.inference_tiles:
+                continue
+                
+            tile_dir = os.path.join(inference_dir, f"tile_{tile_idx}")
+            os.makedirs(tile_dir, exist_ok=True)
+            
+            # Save individual inference tiles
+            for inf_idx, inf_tile in enumerate(result.inference_tiles):
+                if inf_tile['valid']:
+                    tissue_info = ""
+                    if self.tissue_filter_mode != TissueFilterMode.NONE:
+                        tissue_info = f"_filtered"
+                    filename = f"inf_tile_{inf_idx}_nuclei_{inf_tile['nuclei_count']}{tissue_info}.png"
+                    filepath = os.path.join(tile_dir, filename)
+                    Image.fromarray(inf_tile['image']).save(filepath)
+            
+            # Create inference tile mosaic for this main tile
+            inf_mosaic = self._create_inference_mosaic(result.inference_tiles)
+            if inf_mosaic is not None:
+                mosaic_path = os.path.join(tile_dir, "inference_mosaic.png")
+                Image.fromarray(inf_mosaic).save(mosaic_path)
+        
+        self.logger.info(f"Saved inference tiles to {inference_dir}")
+    
+    def _create_inference_mosaic(self, inference_tiles: List[Dict]) -> Optional[np.ndarray]:
+        """Create mosaic from inference tiles."""
+        if not inference_tiles:
+            return None
+            
+        # Find grid dimensions
+        max_row = max(inf['row'] for inf in inference_tiles) + 1
+        max_col = max(inf['col'] for inf in inference_tiles) + 1
+        
+        # Get tile dimensions from first valid tile
+        first_valid = next((inf for inf in inference_tiles if inf['valid']), None)
+        if first_valid is None:
+            return None
+            
+        tile_h, tile_w = first_valid['image'].shape[:2]
+        
+        # Create mosaic
+        mosaic_h = max_row * tile_h
+        mosaic_w = max_col * tile_w
+        mosaic = np.zeros((mosaic_h, mosaic_w, 3), dtype=np.uint8)
+        
+        for inf_tile in inference_tiles:
+            if inf_tile['valid']:
+                row, col = inf_tile['row'], inf_tile['col']
+                y0 = row * tile_h
+                x0 = col * tile_w
+                
+                img = inf_tile['image']
+                h, w = img.shape[:2]
+                mosaic[y0:y0 + h, x0:x0 + w] = img
+        
+        return mosaic
+    
+    def _create_tissue_filter_mask(self, segmentation_mask: np.ndarray) -> np.ndarray:
+        """Create tissue filter mask based on the selected filtering mode."""
+        if self.tissue_filter_mode == TissueFilterMode.NONE:
+            # No filtering - all tissue is valid (exclude only background)
+            return (segmentation_mask != 8).astype(np.uint8) * 255
+        
+        elif self.tissue_filter_mode == TissueFilterMode.EXCLUDE_STRUCTURAL:
+            # Exclude structural tissue: GLD(0) + KER(7) + HYP(3)
+            structural_mask = (segmentation_mask == 0) | (segmentation_mask == 7) | (segmentation_mask == 3)
+            exclude_mask = structural_mask | (segmentation_mask == 8)  # Also exclude background
+            return (~exclude_mask).astype(np.uint8) * 255
+        
+        elif self.tissue_filter_mode == TissueFilterMode.DERMIS_HYPODERMIS_ONLY:
+            # Include only dermis+hypodermis: RET(4) + PAP(5) + EPI(6)
+            include_mask = (segmentation_mask == 4) | (segmentation_mask == 5) | (segmentation_mask == 6)
+            return include_mask.astype(np.uint8) * 255
+        
+        else:
+            # Default to no filtering
+            return (segmentation_mask != 8).astype(np.uint8) * 255
+    
+    def _get_tissue_overlay_color(self) -> Tuple[int, int, int]:
+        """Get overlay color for filtered tissue areas."""
+        if self.tissue_filter_mode == TissueFilterMode.EXCLUDE_STRUCTURAL:
+            return (128, 128, 128)  # Gray for excluded structural tissue
+        elif self.tissue_filter_mode == TissueFilterMode.DERMIS_HYPODERMIS_ONLY:
+            return (0, 0, 255)  # Blue for included dermis+hypodermis
+        else:
+            return (0, 0, 0)  # No overlay for no filtering
+    
+    def _apply_tissue_overlay(self, image: np.ndarray, segmentation_mask: np.ndarray, alpha: float = 0.3) -> np.ndarray:
+        """Apply tissue filtering overlay to image."""
+        if self.tissue_filter_mode == TissueFilterMode.NONE:
+            return image
+        
+        overlay_color = self._get_tissue_overlay_color()
+        image_with_overlay = image.copy()
+        
+        if self.tissue_filter_mode == TissueFilterMode.EXCLUDE_STRUCTURAL:
+            # Overlay gray on structural tissue (GLD+KER+HYP)
+            structural_mask = (segmentation_mask == 0) | (segmentation_mask == 7) | (segmentation_mask == 3)
+            image_with_overlay[structural_mask] = (
+                image_with_overlay[structural_mask] * (1 - alpha) + 
+                np.array(overlay_color) * alpha
+            ).astype(np.uint8)
+        
+        elif self.tissue_filter_mode == TissueFilterMode.DERMIS_HYPODERMIS_ONLY:
+            # Overlay blue on dermis+hypodermis (RET+PAP+EPI)
+            dermis_hypodermis_mask = (segmentation_mask == 4) | (segmentation_mask == 5) | (segmentation_mask == 6)
+            image_with_overlay[dermis_hypodermis_mask] = (
+                image_with_overlay[dermis_hypodermis_mask] * (1 - alpha) + 
+                np.array(overlay_color) * alpha
+            ).astype(np.uint8)
+        
+        return image_with_overlay
+    
+    def _get_tissue_filter_description(self) -> str:
+        """Get description of current tissue filtering mode."""
+        if self.tissue_filter_mode == TissueFilterMode.NONE:
+            return "No tissue filtering - counting all tissue areas"
+        elif self.tissue_filter_mode == TissueFilterMode.EXCLUDE_STRUCTURAL:
+            return "Excluding structural tissue (GLD+KER+HYP) from cell counting"
+        elif self.tissue_filter_mode == TissueFilterMode.DERMIS_HYPODERMIS_ONLY:
+            return "Counting only in dermis+hypodermis (RET+PAP+EPI) tissue"
+        else:
+            return "Unknown tissue filtering mode"
