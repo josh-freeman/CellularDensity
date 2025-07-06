@@ -1,0 +1,30 @@
+# WSI Processing Configuration
+
+# Input/Output Settings
+input_dir: "~/Downloads/ndpi_files"
+output_dir: "~/Downloads/ndpi_files_analysis"
+file_pattern: "*.ndpi"
+
+# Logging
+log_level: "INFO"
+
+# Nuclei Detection Configuration
+nuclei_detection:
+  threshold_param: 13
+  kernel_size: [3, 3]
+  dilation_iterations: 2
+  rpb_threshold_percentile: 50.0
+
+# Masking Configuration
+masking:
+  grabcut_iterations: 5
+  rect_margin: 0.05
+  kernel_size: [3, 3]
+  top_n_contours: 5
+  min_contour_area: 1000.0
+
+# Tiling Configuration
+tiling:
+  tile_size: 128
+  min_coverage_fraction: 0.5
+  contour_level: 6
