@@ -327,7 +327,13 @@ case1_tile002
 case2_tile001
 ```
 
-3. **Mask Color Coding** (RGB values):
+3. **Training Data Processing**:
+- **Grid-based cropping**: Extracts all non-overlapping 224×224 patches from each image
+- **Systematic coverage**: Starts from top-left, proceeds right then down
+- **Quality filtering**: Only keeps patches with ≥10% foreground pixels
+- **No random cropping**: Ensures complete, reproducible coverage of training data
+
+4. **Mask Color Coding** (RGB values):
 ```python
 # 12-class color map for masks
 (108,   0, 115): 0  # GLD - Gland
