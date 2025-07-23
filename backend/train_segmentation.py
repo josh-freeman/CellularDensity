@@ -2,24 +2,24 @@
 train_segmentation.py
 Fine-tunes various backbone models for pixel-wise segmentation of skin histopathology.
 Supports multiple architectures including GigaPath, DINOv2, EfficientNet, and ResNet.
+
+Key features:
+- Grid-based non-overlapping crop extraction (no random cropping)
+- Systematic coverage of entire training images
+- Multiple backbone architecture support with optimized defaults
 """
 
-import argparse, os, json, random, glob
+import argparse, os, json, glob
 from pathlib import Path
 from typing import Union
 
 import torch, timm
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import segmentation_models_pytorch as smp
 import wandb
-
-import timm
-from segmentation_models_pytorch.encoders import encoders
-from segmentation_models_pytorch.encoders.timm_universal import TimmUniversalEncoder
 
 import numpy as np
 from PIL import Image
@@ -133,15 +133,15 @@ class DINOv2Seg(nn.Module):
 # --------------------- Dataset ----------------------------
 class PatchDataset(Dataset):
     """
-    Dataset that yields 224×224 crops with ≥10% foreground pixels.
+    Dataset that yields 224×224 crops using grid-based non-overlapping extraction.
     
     Each entry in train_files.txt must point to the tile stem,
     e.g., 10x/Images/case123_tile004 (without extension).
     The Dataset will:
       1. Load the full image + mask
-      2. Sample a random 224×224 crop where >= min_fg_ratio pixels
-         in the mask are non-zero
-      3. Apply (optionally) Albumentations augmentation + normalization
+      2. Extract all non-overlapping 224×224 crops in a grid pattern
+      3. Filter crops to keep only those with >= min_fg_ratio foreground pixels
+      4. Apply (optionally) Albumentations augmentation + normalization
     """
     def __init__(
         self,
@@ -152,7 +152,6 @@ class PatchDataset(Dataset):
         augment: bool = False,
         crop_size: int = 224,
         min_fg_ratio: float = 0.10,
-        max_tries: int = 10,
     ):
         self.root = Path(root)
         self.paths = [p.strip() for p in open(split_txt)]
@@ -160,7 +159,7 @@ class PatchDataset(Dataset):
         self.mask_ext = mask_ext
         self.crop_size = crop_size
         self.min_fg_ratio = min_fg_ratio
-        self.max_tries = max_tries
+        self.augment = augment
 
         # Albumentations pipeline
         mean = (0.485, 0.456, 0.406)
@@ -176,6 +175,12 @@ class PatchDataset(Dataset):
             A.Normalize(mean, std),
             ToTensorV2()
         ]))
+        
+        # Pre-compute all valid crops for efficiency
+        print("🔍 Pre-computing valid grid crops from dataset...")
+        self.all_crops = []
+        self._precompute_crops()
+        print(f"✅ Found {len(self.all_crops)} valid crops from {len(self.paths)} images")
 
     def _load_pair(self, stem):
         img_path = self.root / f"Images/{stem}{self.img_ext}"
@@ -185,41 +190,68 @@ class PatchDataset(Dataset):
         mask = rgb_to_index(mask)  # convert to 0-11 / 255
         return np.array(img), mask
 
-    def _random_crop(self, img: np.ndarray, mask: np.ndarray):
+    def _extract_grid_crops(self, img: np.ndarray, mask: np.ndarray, stem: str):
         """
-        Random 224×224 crop with ≥ min_fg_ratio foreground pixels.
-        img  : H×W×3  uint8
-        mask : H×W    uint8
+        Extract all non-overlapping 224×224 crops in a grid pattern.
+        Start from top-left, go right then down.
+        Only keep crops with >= min_fg_ratio foreground pixels.
         """
         h_img, w_img = img.shape[:2]
         cs = self.crop_size
-        best_crop = None
-        best_fg = -1.0
+        valid_crops = []
+        
+        # Calculate number of complete crops we can extract
+        n_rows = h_img // cs
+        n_cols = w_img // cs
+        
+        for row in range(n_rows):
+            for col in range(n_cols):
+                y = row * cs
+                x = col * cs
+                
+                img_crop = img[y:y+cs, x:x+cs, :]
+                mask_crop = mask[y:y+cs, x:x+cs]
+                
+                # Check if crop has enough foreground
+                fg_ratio = (mask_crop != IGNORE_LABEL).mean()
+                if fg_ratio >= self.min_fg_ratio:
+                    valid_crops.append({
+                        'stem': stem,
+                        'row': row,
+                        'col': col,
+                        'fg_ratio': fg_ratio
+                    })
+        
+        return valid_crops
 
-        for _ in range(self.max_tries):
-            x = random.randint(0, w_img - cs)
-            y = random.randint(0, h_img - cs)
-            img_crop = img[y:y+cs, x:x+cs, :]
-            mask_crop = mask[y:y+cs, x:x+cs]
-
-            fg_ratio = (mask_crop != IGNORE_LABEL).mean()
-            if fg_ratio > best_fg:
-                best_fg, best_crop = fg_ratio, (img_crop, mask_crop)
-            if fg_ratio >= self.min_fg_ratio:
-                break
-
-        return best_crop  # (img_crop, mask_crop)
+    def _precompute_crops(self):
+        """Pre-compute all valid crops from all images."""
+        for stem in self.paths:
+            img, mask = self._load_pair(stem)
+            crops = self._extract_grid_crops(img, mask, stem)
+            self.all_crops.extend(crops)
 
     def __len__(self):
-        return len(self.paths)
+        return len(self.all_crops)
 
     def __getitem__(self, idx):
-        stem = self.paths[idx]
+        crop_info = self.all_crops[idx]
+        stem = crop_info['stem']
+        row = crop_info['row']
+        col = crop_info['col']
+        
+        # Load the full image/mask
         img, mask = self._load_pair(stem)
-        img, mask = self._random_crop(img, mask)  # enforce ≥10% FG
+        
+        # Extract the specific crop
+        cs = self.crop_size
+        y = row * cs
+        x = col * cs
+        img_crop = img[y:y+cs, x:x+cs, :]
+        mask_crop = mask[y:y+cs, x:x+cs]
 
-        # Albumentations expects numpy arrays
-        aug = self.t_aug(image=img, mask=mask)
+        # Apply augmentations
+        aug = self.t_aug(image=img_crop, mask=mask_crop)
         return aug["image"], aug["mask"].long()
 
 
