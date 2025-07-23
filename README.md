@@ -331,6 +331,7 @@ case2_tile001
 - **Grid-based cropping**: Extracts all non-overlapping 224×224 patches from each image
 - **Systematic coverage**: Starts from top-left, proceeds right then down
 - **Quality filtering**: Only keeps patches with ≥10% foreground pixels
+- **Augmentations**: Rotations, reflections, flips, and brightness/contrast (no stretching)
 - **No random cropping**: Ensures complete, reproducible coverage of training data
 
 4. **Mask Color Coding** (RGB values):
@@ -381,6 +382,16 @@ python train_segmentation.py --root /path/to/data \
   --epochs 40 \
   --freeze_encoder_epochs 2
 ```
+
+#### Data Augmentation
+
+Training uses geometric and brightness augmentations (no stretching):
+- **Horizontal/Vertical Flips** (50% probability each)
+- **90-degree rotations** (75% probability)
+- **Small angle rotations** (±15 degrees, 30% probability)
+- **Transpose/diagonal flip** (50% probability)
+- **Brightness/contrast adjustment** (30% probability, accounts for staining variation)
+- **No stretching/scaling** (maintains tissue proportions)
 
 #### Advanced Training Options
 

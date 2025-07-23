@@ -161,14 +161,16 @@ class PatchDataset(Dataset):
         self.min_fg_ratio = min_fg_ratio
         self.augment = augment
 
-        # Albumentations pipeline
+        # Albumentations pipeline - geometric + brightness/contrast (no stretching)
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
         self.t_aug = (A.Compose([
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
-            A.RandomRotate90(p=0.5),
-            A.RandomBrightnessContrast(p=0.3),
+            A.RandomRotate90(p=0.75),  # Increased probability for 90-degree rotations
+            A.Rotate(limit=15, p=0.3, border_mode=0),  # Small angle rotations, pad with zeros
+            A.Transpose(p=0.5),  # Additional reflection (transpose = flip along diagonal)
+            A.RandomBrightnessContrast(p=0.3),  # Keep brightness/contrast for staining variation
             A.Normalize(mean, std),
             ToTensorV2()
         ]) if augment else A.Compose([
