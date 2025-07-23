@@ -276,6 +276,145 @@ Segmentation analysis generates:
 - **Quantitative statistics** (percentages, areas)
 - **Batch processing CSV** for multiple images
 
+## 🏋️ Model Training
+
+### Training Custom Segmentation Models
+
+The platform includes a comprehensive training framework for fine-tuning models on your own skin histopathology data.
+
+#### Quick Start Training
+
+```bash
+cd backend
+
+# Show available model architectures and their defaults
+python train_segmentation.py --show_defaults
+
+# Train with GigaPath backbone (optimized for histopathology)
+python train_segmentation.py --root /path/to/dataset/data --backbone gigapath_vitl
+
+# Train with EfficientNet-B5 (good balance of speed/accuracy)
+python train_segmentation.py --root /path/to/dataset/data --backbone efficientnet-b5
+
+# Train with DINOv2 (self-supervised vision transformer)
+python train_segmentation.py --root /path/to/dataset/data --backbone vit_base_patch14_dinov2
+
+# Resume training from checkpoint
+python train_segmentation.py --root /path/to/dataset/data --resume_from_checkpoint auto
+```
+
+#### Dataset Preparation
+
+1. **Directory Structure**:
+```
+dataset/
+├── data/
+│   ├── Images/          # RGB images (TIFF/PNG)
+│   │   ├── case1_tile001.tif
+│   │   └── case1_tile002.tif
+│   └── Masks/           # RGB masks with color-coded labels
+│       ├── case1_tile001.png
+│       └── case1_tile002.png
+├── train_files.txt      # List of training samples
+└── validation_files.txt # List of validation samples
+```
+
+2. **File Lists Format**:
+```
+# train_files.txt (no extensions, just stems)
+case1_tile001
+case1_tile002
+case2_tile001
+```
+
+3. **Mask Color Coding** (RGB values):
+```python
+# 12-class color map for masks
+(108,   0, 115): 0  # GLD - Gland
+(145,   1, 122): 1  # INF - Inflammation
+(216,  47, 148): 2  # FOL - Follicle
+(254, 246, 242): 3  # HYP - Hypodermis
+(181,   9, 130): 4  # RET - Reticular
+(236,  85, 157): 5  # PAP - Papillary
+( 73,   0, 106): 6  # EPI - Epidermis
+(248, 123, 168): 7  # KER - Keratin
+(  0,   0,   0): 8  # BKG - Background
+(127, 255, 255): 9  # BCC - Basal Cell Carcinoma
+(127, 255, 142): 10 # SCC - Squamous Cell Carcinoma
+(255, 127, 127): 11 # IEC - Inflammatory/Epithelial Cells
+```
+
+#### Available Backbone Models
+
+**Histopathology Foundation Models**:
+- `gigapath_vitl` - Prov-GigaPath ViT-Large (1.3B histopathology tiles)
+
+**Self-supervised Vision Transformers**:
+- `vit_small_patch14_dinov2` - DINOv2 ViT-Small/14
+- `vit_base_patch14_dinov2` - DINOv2 ViT-Base/14 
+- `vit_large_patch14_dinov2` - DINOv2 ViT-Large/14
+- `vit_giant_patch14_dinov2` - DINOv2 ViT-Giant/14
+
+**CNN Models (ImageNet pretrained)**:
+- `resnet34`, `resnet50`, `resnet101` - ResNet architectures
+- `efficientnet-b3`, `efficientnet-b5`, `efficientnet-b7` - EfficientNet family
+- `resnext50_32x4d` - ResNeXt architecture
+- `densenet121` - DenseNet architecture
+- `mobilenet_v2` - Lightweight mobile architecture
+
+#### Training Configuration
+
+Model-specific defaults are automatically applied from `model_configs.json`:
+
+```bash
+# Override specific parameters
+python train_segmentation.py --root /path/to/data \
+  --backbone efficientnet-b5 \
+  --lr 1e-4 \
+  --bs 32 \
+  --epochs 40 \
+  --freeze_encoder_epochs 2
+```
+
+#### Advanced Training Options
+
+```bash
+# Save checkpoints during training
+python train_segmentation.py --root /path/to/data \
+  --save_checkpoints \
+  --checkpoint_interval 5
+
+# Resume from specific checkpoint
+python train_segmentation.py --root /path/to/data \
+  --resume_from_checkpoint ./checkpoints/checkpoint_epoch_015.pt
+
+# Custom file extensions
+python train_segmentation.py --root /path/to/data \
+  --img_ext .png \
+  --mask_ext .tif
+```
+
+#### Training Output
+
+Training generates:
+- **Best model weights**: `{backbone}_unet_best.pt`
+- **Training metrics**: Logged to Weights & Biases
+- **Checkpoints**: Optional periodic saves
+- **Visualization**: Loss curves and sample predictions in W&B
+
+#### Model Deployment
+
+After training, use your model for inference:
+```bash
+# Use your trained model
+python skin_seg_inference.py image.jpg --model_path ./efficientnet-b5_unet_best.pt
+
+# Upload to HuggingFace for easy sharing
+# 1. Create a model repository on HuggingFace
+# 2. Upload your .pt file
+# 3. Others can use: --model_name your-username/your-model
+```
+
 ## 🔧 Configuration Parameters
 
 ### Enhanced Cellular Density Analysis

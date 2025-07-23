@@ -1,14 +1,40 @@
-gunicorn==20.1.0
+# === Web Framework ===
 Flask==3.1.0
 Flask-Cors==5.0.0
+gunicorn==20.1.0
+python-dotenv==1.0.0
+
+# === Core Dependencies ===
 numpy==1.26.4
 pandas==2.2.3
 scikit-learn==1.5.2
 scipy==1.15.2
 matplotlib==3.10.0
 seaborn==0.13.2
-tensorflow==2.19.0
 requests==2.32.3
+
+# === Image Processing ===
 opencv-python==4.9.0.80
-gunicorn==20.1.0
-python-dotenv==1.0.0
+Pillow==11.2.1
+scikit-image==0.24.0
+openslide-python==1.4.2  # WSI reader (.svs, .ndpi, etc.)
+
+# === Deep Learning Stack ===
+torch==2.2.1  # or +cu121 / +cpu wheel as appropriate
+torchvision==0.17.1
+tensorflow==2.19.0  # Keep for legacy support if needed
+timm==1.0.16
+segmentation-models-pytorch==0.3.3
+
+# === Data Augmentation & Transforms ===
+albumentations==1.4.0
+
+# === HuggingFace Hub (for model downloads) ===
+huggingface-hub==0.20.3
+transformers==4.36.2  # Only needed for HF auth; can be skipped if timm alone suffices
+
+# === Training Utilities ===
+wandb==0.16.1  # Experiment tracking
+tqdm==4.66.1
+einops==0.8.1
+pyyaml==6.0.2  # Config files (optional)
