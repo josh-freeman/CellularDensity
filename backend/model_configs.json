@@ -3,115 +3,58 @@
     "gigapath_vitl": {
       "lr": 3e-5,
       "freeze_encoder_epochs": 3,
-      "batch_size": 16,
+      "batch_size": 8,
       "weight_decay": 1e-4,
-      "description": "Conservative LR for pretrained histopathology model"
+      "default_epochs": 25,
+      "description": "GigaPath ViT-Large - histopathology foundation model"
     },
-    "vit_small_patch14_dinov2": {
+    "efficientnet-b3": {
       "lr": 1e-4,
       "freeze_encoder_epochs": 2,
-      "batch_size": 128,
+      "batch_size": 16,
       "weight_decay": 1e-4,
-      "default_epochs": 30,
-      "description": "Higher LR for self-supervised ViT, smaller model allows larger batch, needs more epochs"
+      "default_epochs": 20,
+      "description": "EfficientNet-B3 - balanced efficiency and accuracy"
     },
-    "vit_base_patch14_dinov2": {
-      "lr": 2e-4,
-      "freeze_encoder_epochs": 1,
-      "batch_size": 64,
+    "efficientnet-b5": {
+      "lr": 8e-5,
+      "freeze_encoder_epochs": 2,
+      "batch_size": 12,
       "weight_decay": 1e-4,
-      "default_epochs": 35,
-      "description": "DINOv2 optimized: much higher LR (2e-4), moderate batch (64), minimal freezing"
+      "default_epochs": 20,
+      "description": "EfficientNet-B5 - higher capacity"
     },
-    "vit_large_patch14_dinov2": {
+    "efficientnet-b7": {
       "lr": 5e-5,
-      "freeze_encoder_epochs": 4,
-      "batch_size": 64,
+      "freeze_encoder_epochs": 2,
+      "batch_size": 8,
       "weight_decay": 1e-4,
-      "default_epochs": 40,
-      "description": "A100-optimized: Large batch for ViT-Large"
-    },
-    "vit_giant_patch14_dinov2": {
-      "lr": 3e-5,
-      "freeze_encoder_epochs": 5,
-      "batch_size": 4,
-      "weight_decay": 1e-4,
-      "default_epochs": 50,
-      "description": "Very conservative for giant model, requires long training (50+ epochs)"
+      "default_epochs": 25,
+      "description": "EfficientNet-B7 - highest capacity, requires more memory"
     },
     "resnet50": {
       "lr": 1e-4,
       "freeze_encoder_epochs": 2,
-      "batch_size": 32,
+      "batch_size": 16,
       "weight_decay": 1e-4,
-      "description": "Standard CNN training"
+      "default_epochs": 20,
+      "description": "ResNet-50 - reliable baseline"
     },
     "resnet34": {
       "lr": 1e-4,
       "freeze_encoder_epochs": 2,
-      "batch_size": 32,
-      "weight_decay": 1e-4,
-      "description": "Standard CNN training"
-    },
-    "resnet101": {
-      "lr": 8e-5,
-      "freeze_encoder_epochs": 3,
-      "batch_size": 16,
-      "weight_decay": 1e-4,
-      "description": "Larger CNN needs lower LR"
-    },
-    "efficientnet-b3": {
-      "lr": 1e-3,
-      "freeze_encoder_epochs": 3,
-      "batch_size": 16,
-      "weight_decay": 0,
-      "default_epochs": 30,
-      "description": "EfficientNet-B3 baseline training (reaches ~0.52 loss)"
-    },
-    "efficientnet-b5": {
-      "lr": 9e-4,
-      "freeze_encoder_epochs": 2,
       "batch_size": 24,
-      "weight_decay": 1e-6,
-      "default_epochs": 40,
-      "description": "EfficientNet-B5 optimized"
-    },
-    "efficientnet-b7": {
-      "lr": 1e-3,
-      "freeze_encoder_epochs": 2,
-      "batch_size": 128,
-      "weight_decay": 1e-6,
-      "default_epochs": 50,
-      "description": "EfficientNet-B7 optimized"
-    },
-    "timm-efficientnet-l2": {
-      "lr": 3e-5,
-      "freeze_encoder_epochs": 5,
-      "batch_size": 8,
       "weight_decay": 1e-4,
-      "default_epochs": 60,
-      "description": "EfficientNet-L2 training (massive 480M param model, very conservative, needs extended training)"
+      "default_epochs": 20,
+      "description": "ResNet-34 - faster training, smaller model"
     },
-    "resnext50_32x4d": {
-      "lr": 8e-5,
+    "vit_base_patch14_dinov2": {
+      "lr": 5e-5,
       "freeze_encoder_epochs": 3,
-      "batch_size": 16,
+      "batch_size": 12,
       "weight_decay": 1e-4,
-      "description": "ResNeXt training"
-    },
-    "densenet121": {
-      "lr": 1e-4,
-      "freeze_encoder_epochs": 2,
-      "batch_size": 32,
-      "weight_decay": 1e-4,
-      "description": "DenseNet training"
-    },
-    "mobilenet_v2": {
-      "lr": 1e-4,
-      "freeze_encoder_epochs": 1,
-      "batch_size": 64,
-      "weight_decay": 1e-4,
-      "description": "Lightweight model, fast training"
+      "default_epochs": 25,
+      "description": "DINOv2 ViT-Base - self-supervised vision transformer"
     }
   },
   "default_fallback": {
@@ -119,27 +62,13 @@
     "freeze_encoder_epochs": 2,
     "batch_size": 16,
     "weight_decay": 1e-4,
-    "description": "Generic defaults for unknown models"
+    "default_epochs": 20,
+    "description": "Generic defaults for unspecified models"
   },
   "model_groups": {
-    "Histopathology Foundation Models": ["gigapath_vitl"],
-    "Self-supervised Vision Transformers": [
-      "vit_small_patch14_dinov2", 
-      "vit_base_patch14_dinov2", 
-      "vit_large_patch14_dinov2", 
-      "vit_giant_patch14_dinov2"
-    ],
-    "CNN Models (ImageNet pretrained)": [
-      "resnet34", 
-      "resnet50", 
-      "resnet101", 
-      "efficientnet-b3",
-      "efficientnet-b5", 
-      "efficientnet-b7",
-      "timm-efficientnet-l2",
-      "resnext50_32x4d", 
-      "densenet121", 
-      "mobilenet_v2"
-    ]
+    "EfficientNet Family": ["efficientnet-b3", "efficientnet-b5", "efficientnet-b7"],
+    "ResNet Family": ["resnet34", "resnet50"],
+    "Vision Transformers": ["gigapath_vitl", "vit_base_patch14_dinov2"],
+    "All Models": ["gigapath_vitl", "efficientnet-b3", "efficientnet-b5", "efficientnet-b7", "resnet50", "resnet34", "vit_base_patch14_dinov2"]
   }
 }
