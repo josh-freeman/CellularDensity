@@ -536,7 +536,7 @@ def train(args):
     }
     
     backbone_short = backbone_display.get(args.backbone, args.backbone)
-    wandb_name = f"{backbone_short}-histoseg-{args.epochs}ep-bs{args.bs}-lr{args.lr}"
+    wandb_name = f"{backbone_short}-histoseg-{args.magnification}-{args.epochs}ep-bs{args.bs}-lr{args.lr}"
     if resume_from_checkpoint:
         wandb_name += "-resumed"
         
@@ -551,6 +551,7 @@ def train(args):
             "n_classes": args.n_classes,
             "backbone": args.backbone,
             "backbone_display": backbone_short,
+            "magnification": args.magnification,
             "img_ext": args.img_ext,
             "mask_ext": args.mask_ext,
             "architecture": f"{backbone_short}-UNet",
@@ -659,7 +660,7 @@ def train(args):
         # Save best model with backbone-specific naming
         if vloss < best_val:
             best_val = vloss
-            model_filename = f"{args.backbone}_unet_best.pt"
+            model_filename = f"{args.backbone}_{args.magnification}_unet_best.pt"
             torch.save(model.state_dict(), model_filename)
             wandb.save(model_filename)
             wandb.log({"best_val_loss": best_val})
@@ -701,14 +702,14 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Train with GigaPath backbone (default):
-  python train_segmentation.py --root /path/to/dataset/data
+  # Train with GigaPath backbone on 10x data:
+  python train_segmentation.py --root /path/to/dataset/data/10x --magnification 10x
   
-  # Train with specific backbone:
-  python train_segmentation.py --root /path/to/dataset/data --backbone efficientnet-b5
+  # Train with specific backbone on 1x data:
+  python train_segmentation.py --root /path/to/dataset/data/1x --backbone efficientnet-b5 --magnification 1x
   
   # Resume training from checkpoint:
-  python train_segmentation.py --root /path/to/dataset/data --resume_from_checkpoint auto
+  python train_segmentation.py --root /path/to/dataset/data/10x --magnification 10x --resume_from_checkpoint auto
   
   # Show available model defaults:
   python train_segmentation.py --show_defaults
@@ -733,6 +734,8 @@ Examples:
                         'vit_large_patch14_dinov2, vit_giant_patch14_dinov2')
     p.add_argument("--img_ext", default=".tif", help="Image file extension")
     p.add_argument("--mask_ext", default=".png", help="Mask file extension")
+    p.add_argument("--magnification", type=str, required=True,
+                   help='Magnification level of training data (e.g., "1x", "2x", "5x", "10x")')
     p.add_argument("--resume_from_checkpoint", default=None, 
                    help='Resume from checkpoint. Use "auto" for latest checkpoint, or provide specific path')
     p.add_argument("--checkpoint_dir", default="./checkpoints",
