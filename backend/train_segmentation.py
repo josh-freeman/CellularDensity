@@ -9,7 +9,7 @@ Key features:
 - Multiple backbone architecture support with optimized defaults
 """
 
-import argparse, os, json, glob
+import argparse, os, json, glob, shutil
 from pathlib import Path
 from typing import Union
 
@@ -23,6 +23,9 @@ import wandb
 
 import numpy as np
 from PIL import Image
+
+# Import precompute function
+from precompute_crops import extract_and_save_crops
 
 # ---------------------------------- Color map ---------------------------------
 COLOR2IDX = {
@@ -133,34 +136,30 @@ class DINOv2Seg(nn.Module):
 # --------------------- Dataset ----------------------------
 class PatchDataset(Dataset):
     """
-    Dataset that yields 224×224 crops using grid-based non-overlapping extraction.
-    
-    Each entry in train_files.txt must point to the tile stem,
-    e.g., 10x/Images/case123_tile004 (without extension).
-    The Dataset will:
-      1. Load the full image + mask
-      2. Extract all non-overlapping 224×224 crops in a grid pattern
-      3. Filter crops to keep only those with >= min_fg_ratio foreground pixels
-      4. Apply (optionally) Albumentations augmentation + normalization
+    Fast dataset that loads precomputed 224×224 crops directly from disk.
+    Expects crops to be precomputed using precompute_crops.py.
     """
     def __init__(
         self,
-        root: Union[str, Path],
-        split_txt: str,
-        img_ext: str = ".png",
-        mask_ext: str = ".png",
+        crop_dir: Union[str, Path],
         augment: bool = False,
-        crop_size: int = 224,
-        min_fg_ratio: float = 0.10,
     ):
-        self.root = Path(root)
-        self.paths = [p.strip() for p in open(split_txt)]
-        self.img_ext = img_ext
-        self.mask_ext = mask_ext
-        self.crop_size = crop_size
-        self.min_fg_ratio = min_fg_ratio
+        self.crop_dir = Path(crop_dir)
         self.augment = augment
-
+        
+        # Load crop metadata
+        metadata_file = self.crop_dir / "crop_metadata.txt"
+        if not metadata_file.exists():
+            raise FileNotFoundError(f"Crop metadata not found: {metadata_file}")
+        
+        self.crop_list = []
+        with open(metadata_file, 'r') as f:
+            next(f)  # Skip header
+            for line in f:
+                parts = line.strip().split(',')
+                crop_id = int(parts[0])
+                self.crop_list.append(crop_id)
+        
         # Albumentations pipeline - geometric + brightness/contrast (no stretching)
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
@@ -168,7 +167,6 @@ class PatchDataset(Dataset):
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.75),  # Increased probability for 90-degree rotations
-            A.Rotate(limit=15, p=0.3, border_mode=0),  # Small angle rotations, pad with zeros
             A.Transpose(p=0.5),  # Additional reflection (transpose = flip along diagonal)
             A.RandomBrightnessContrast(p=0.3),  # Keep brightness/contrast for staining variation
             A.Normalize(mean, std),
@@ -178,82 +176,24 @@ class PatchDataset(Dataset):
             ToTensorV2()
         ]))
         
-        # Pre-compute all valid crops for efficiency
-        print("🔍 Pre-computing valid grid crops from dataset...")
-        self.all_crops = []
-        self._precompute_crops()
-        print(f"✅ Found {len(self.all_crops)} valid crops from {len(self.paths)} images")
-
-    def _load_pair(self, stem):
-        img_path = self.root / f"Images/{stem}{self.img_ext}"
-        mask_path = self.root / f"Masks/{stem}{self.mask_ext}"
-        img = Image.open(img_path).convert("RGB")
-        mask = np.array(Image.open(mask_path).convert("RGB"))  # keep color
-        mask = rgb_to_index(mask)  # convert to 0-11 / 255
-        return np.array(img), mask
-
-    def _extract_grid_crops(self, img: np.ndarray, mask: np.ndarray, stem: str):
-        """
-        Extract all non-overlapping 224×224 crops in a grid pattern.
-        Start from top-left, go right then down.
-        Only keep crops with >= min_fg_ratio foreground pixels.
-        """
-        h_img, w_img = img.shape[:2]
-        cs = self.crop_size
-        valid_crops = []
-        
-        # Calculate number of complete crops we can extract
-        n_rows = h_img // cs
-        n_cols = w_img // cs
-        
-        for row in range(n_rows):
-            for col in range(n_cols):
-                y = row * cs
-                x = col * cs
-                
-                img_crop = img[y:y+cs, x:x+cs, :]
-                mask_crop = mask[y:y+cs, x:x+cs]
-                
-                # Check if crop has enough foreground
-                fg_ratio = (mask_crop != IGNORE_LABEL).mean()
-                if fg_ratio >= self.min_fg_ratio:
-                    valid_crops.append({
-                        'stem': stem,
-                        'row': row,
-                        'col': col,
-                        'fg_ratio': fg_ratio
-                    })
-        
-        return valid_crops
-
-    def _precompute_crops(self):
-        """Pre-compute all valid crops from all images."""
-        for stem in self.paths:
-            img, mask = self._load_pair(stem)
-            crops = self._extract_grid_crops(img, mask, stem)
-            self.all_crops.extend(crops)
+        print(f"✅ Found {len(self.crop_list)} precomputed crops in {crop_dir}")
 
     def __len__(self):
-        return len(self.all_crops)
+        return len(self.crop_list)
 
     def __getitem__(self, idx):
-        crop_info = self.all_crops[idx]
-        stem = crop_info['stem']
-        row = crop_info['row']
-        col = crop_info['col']
+        crop_id = self.crop_list[idx]
+        crop_name = f"crop_{crop_id:06d}"
         
-        # Load the full image/mask
-        img, mask = self._load_pair(stem)
+        # Load precomputed crop files
+        img_path = self.crop_dir / "images" / f"{crop_name}.png"
+        mask_path = self.crop_dir / "masks" / f"{crop_name}.png"
         
-        # Extract the specific crop
-        cs = self.crop_size
-        y = row * cs
-        x = col * cs
-        img_crop = img[y:y+cs, x:x+cs, :]
-        mask_crop = mask[y:y+cs, x:x+cs]
-
+        img = np.array(Image.open(img_path).convert("RGB"))
+        mask = np.array(Image.open(mask_path))
+        
         # Apply augmentations
-        aug = self.t_aug(image=img_crop, mask=mask_crop)
+        aug = self.t_aug(image=img, mask=mask)
         return aug["image"], aug["mask"].long()
 
 
@@ -565,18 +505,65 @@ def train(args):
     print(f"Started wandb run: {wandb.run.name}")
     print(f"Wandb run URL: {wandb.run.url}")
     
-    # Datasets
-    train_ds = PatchDataset(args.root, f"{args.root}/../train_files.txt", augment=True, img_ext=args.img_ext, mask_ext=args.mask_ext)
-    val_ds = PatchDataset(args.root, f"{args.root}/../validation_files.txt", img_ext=args.img_ext, mask_ext=args.mask_ext)
+    # Datasets - use precomputed crops
+    train_crop_dir = f"{args.root}_crops_train"
+    val_crop_dir = f"{args.root}_crops_val"
+    
+    # Handle crop precomputation
+    def run_precompute(root, split_file, output_dir, force=False):
+        """Run precompute_crops directly if needed."""
+        if force and Path(output_dir).exists():
+            print(f"🗑️  Removing existing crops: {output_dir}")
+            shutil.rmtree(output_dir)
+        
+        if not Path(output_dir).exists() or not (Path(output_dir) / "crop_metadata.txt").exists():
+            print(f"🔄 Precomputing crops: {output_dir}")
+            try:
+                extract_and_save_crops(
+                    root_dir=root,
+                    split_file=split_file,
+                    output_dir=output_dir,
+                    img_ext=args.img_ext,
+                    mask_ext=args.mask_ext,
+                    crop_size=224,
+                    max_bg_ratio=args.max_bg_ratio
+                )
+                print(f"✅ Precomputation completed: {output_dir}")
+            except Exception as e:
+                print(f"❌ Precomputation failed: {e}")
+                import sys
+                sys.exit(1)
+        else:
+            print(f"✅ Using existing crops: {output_dir}")
+    
+    # Run precomputation for train and validation sets
+    run_precompute(args.root, f"{args.root}/../train_files.txt", train_crop_dir, args.force_precompute)
+    run_precompute(args.root, f"{args.root}/../validation_files.txt", val_crop_dir, args.force_precompute)
+    
+    train_ds = PatchDataset(train_crop_dir, augment=True)
+    val_ds = PatchDataset(val_crop_dir, augment=False)
 
+    # Optimize data loading for better GPU utilization
     train_dl = DataLoader(train_ds, batch_size=args.bs, shuffle=True,
-                          num_workers=16, pin_memory=True, collate_fn=simple_collate, persistent_workers=True)
+                          num_workers=2, pin_memory=True, collate_fn=simple_collate,
+                          persistent_workers=True, prefetch_factor=2)
     val_dl = DataLoader(val_ds, batch_size=args.bs, shuffle=False,
-                        num_workers=8, collate_fn=simple_collate, persistent_workers=True)
+                        num_workers=1, pin_memory=True, collate_fn=simple_collate,
+                        persistent_workers=True, prefetch_factor=2)
 
     # Model
+    print(f"🎯 Using device: {args.device}")
+    print(f"🎯 CUDA available: {torch.cuda.is_available()}")
+    print(f"🎯 CUDA device count: {torch.cuda.device_count()}")
+    if torch.cuda.is_available():
+        print(f"🎯 GPU name: {torch.cuda.get_device_name()}")
+        print(f"🎯 GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB")
+    
     model = build_model(backbone=args.backbone, out_classes=args.n_classes).to(args.device)
     enc = model.encoder if hasattr(model, "encoder") else getattr(model, "backbone", None)
+    
+    # Verify model is on GPU
+    print(f"🎯 Model device: {next(model.parameters()).device}")
     
     # Freeze encoder initially
     freeze_encoder = args.freeze_encoder_epochs > 0  
@@ -614,8 +601,14 @@ def train(args):
         epoch_loss = 0
         num_batches = 0
         
-        for imgs, masks in train_dl:
+        for batch_idx, (imgs, masks) in enumerate(train_dl):
             imgs, masks = imgs.to(args.device), masks.to(args.device)
+            
+            # Debug first batch
+            if batch_idx == 0:
+                print(f"🎯 Batch {batch_idx}: imgs.device = {imgs.device}, masks.device = {masks.device}")
+                print(f"🎯 Batch shape: imgs={imgs.shape}, masks={masks.shape}")
+            
             opt.zero_grad()
             out = model(imgs)
             loss = criterion(out, masks)
@@ -746,6 +739,10 @@ Examples:
                    help="Save checkpoint every N epochs (default: 10)")
     p.add_argument("--show_defaults", action="store_true",
                    help="Show model-specific default hyperparameters for all backbones and exit")
+    p.add_argument("--force_precompute", action="store_true",
+                   help="Force re-precomputation of crops (deletes existing crop directories)")
+    p.add_argument("--max_bg_ratio", type=float, default=0.9,
+                   help="Maximum background ratio for crop filtering (default: 0.9)")
     
     args = p.parse_args()
     
