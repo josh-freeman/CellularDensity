@@ -1285,6 +1285,7 @@ Examples:
   
   # WSI with custom neighborhood size:
   python skin_seg_inference.py slide.ndpi --model_name efficientnet-b3_10x --neighborhood_size 5
+
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -1293,6 +1294,7 @@ Examples:
     
     # Model specification options
     parser.add_argument("--model_name", help="Model name from JoshuaFreeman/skin_seg (e.g., 'efficientnet-b3_10x', 'efficientnet-b5', 'efficientnet-b7_10x', 'gigapath')")
+
     parser.add_argument("--model_path", help="Local path to model weights")
     parser.add_argument("--backbone", help="Backbone architecture (auto-detected if not provided)")
     parser.add_argument("--magnification", help="Expected magnification of input images (e.g., '1x', '2x', '5x', '10x'). If not specified, will try to auto-detect from model name")
