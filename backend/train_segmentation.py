@@ -109,28 +109,48 @@ class DINOv2Seg(nn.Module):
         self.patch_h = self.patch_w = self.backbone.patch_embed.patch_size[0]
         C = self.backbone.embed_dim
 
-        # UNet-style decoder
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(C, 512, 2, stride=2), nn.GELU(),
-            nn.ConvTranspose2d(512, 256, 2, stride=2), nn.GELU(),
-            nn.ConvTranspose2d(256, 128, 2, stride=2), nn.GELU(),
-            nn.Conv2d(128, n_classes, 1)
+        # Linear decoder head similar to Facebook's implementation
+        # Using a simpler design that works better with DINOv2 features
+        self.head = nn.Sequential(
+            nn.Conv2d(C, 256, kernel_size=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
+            nn.Conv2d(256, n_classes, kernel_size=1)
         )
+        
+        # Initialize decoder weights
+        for m in self.head.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         B, _, H, W = x.shape
-        tokens = self.backbone.forward_features(x)  # B, N+1, C
-        tokens = tokens[:, 1:, :]  # drop CLS token
-
-        # Reshape sequence back to 2-D grid
+        
+        # Extract features using DINOv2 backbone
+        features = self.backbone.forward_features(x)  # B, N+1, C
+        
+        # Remove CLS token and reshape to 2D feature map
+        features = features[:, 1:, :]  # B, N, C
+        
+        # Calculate spatial dimensions
         h = H // self.patch_h
         w = W // self.patch_w
-        feat = tokens.transpose(1, 2).reshape(B, -1, h, w)  # B, C, h, w
-
-        mask = self.decoder(feat)
-        return nn.functional.interpolate(
-            mask, size=(H, W), mode="bilinear", align_corners=False
+        
+        # Reshape to spatial feature map
+        features = features.transpose(1, 2).reshape(B, -1, h, w)  # B, C, h, w
+        
+        # Apply segmentation head
+        masks = self.head(features)
+        
+        # Upsample to original resolution
+        masks = nn.functional.interpolate(
+            masks, size=(H, W), mode="bilinear", align_corners=False
         )
+        
+        return masks
 
 
 # --------------------- Dataset ----------------------------
@@ -570,8 +590,30 @@ def train(args):
     for p in enc.parameters():
         p.requires_grad = not freeze_encoder
 
-    opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-                            lr=args.lr, weight_decay=1e-4)
+    # Optimizer configuration
+    if 'dinov2' in args.backbone:
+        # For DINOv2, use different learning rates for backbone and head
+        param_groups = []
+        
+        # Head parameters with full learning rate
+        if hasattr(model, 'head'):
+            param_groups.append({'params': model.head.parameters(), 'lr': args.lr})
+        else:
+            # Fallback for other decoder architectures
+            decoder_params = [p for n, p in model.named_parameters() if 'backbone' not in n]
+            param_groups.append({'params': decoder_params, 'lr': args.lr})
+        
+        # Backbone parameters with reduced learning rate (when unfrozen)
+        if not freeze_encoder:
+            param_groups.append({'params': enc.parameters(), 'lr': args.lr * 0.1})
+        
+        opt = torch.optim.AdamW(param_groups, weight_decay=1e-4)
+    else:
+        opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
+                                lr=args.lr, weight_decay=1e-4)
+    
+    # Loss function - use CrossEntropy as primary loss for DINOv2
+    ce_loss = nn.CrossEntropyLoss(ignore_index=IGNORE_LABEL)
     criterion = dice_loss
 
     # Load checkpoint if resuming
@@ -611,8 +653,21 @@ def train(args):
             
             opt.zero_grad()
             out = model(imgs)
-            loss = criterion(out, masks)
+            
+            # For DINOv2, use CrossEntropy as primary loss with Dice as auxiliary
+            if 'dinov2' in args.backbone:
+                ce = ce_loss(out, masks)
+                dice = criterion(out, masks)
+                loss = 0.7 * ce + 0.3 * dice  # Weighted more towards CE
+            else:
+                loss = criterion(out, masks)
+            
             loss.backward()
+            
+            # Gradient clipping for stability with ViT models
+            if 'dinov2' in args.backbone or 'gigapath' in args.backbone:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             opt.step()
             
             epoch_loss += loss.item()
@@ -621,34 +676,72 @@ def train(args):
         avg_train_loss = epoch_loss / max(num_batches, 1)  # Avoid division by zero
 
         # Unfreeze after warm-up
-        if epoch == args.freeze_encoder_epochs + 1:
+        if epoch == args.freeze_encoder_epochs + 1 and args.freeze_encoder_epochs > 0:
             for p in enc.parameters():
                 p.requires_grad = True
-            already_in_opt = set(id(p) for g in opt.param_groups for p in g["params"])
-            opt.add_param_group(
-                {"params": [p for p in enc.parameters() if id(p) not in already_in_opt]}
-            )
-            print(f"🔓 Encoder unfrozen at epoch {epoch}")
+            
+            if 'dinov2' in args.backbone:
+                # Add encoder parameters with much lower learning rate
+                opt.add_param_group({
+                    'params': enc.parameters(), 
+                    'lr': args.lr * 0.01  # 1% of head learning rate
+                })
+                print(f"🔓 DINOv2 encoder unfrozen at epoch {epoch} with LR={args.lr * 0.01}")
+            else:
+                already_in_opt = set(id(p) for g in opt.param_groups for p in g["params"])
+                opt.add_param_group(
+                    {"params": [p for p in enc.parameters() if id(p) not in already_in_opt]}
+                )
+                print(f"🔓 Encoder unfrozen at epoch {epoch}")
 
         # Validation
         model.eval()
-        vloss, n = 0, 0
+        vloss, vce, vcombined, n = 0, 0, 0, 0
         with torch.no_grad():
             for imgs, masks in val_dl:
                 imgs, masks = imgs.to(args.device), masks.to(args.device)
-                vloss += criterion(model(imgs), masks).item() * imgs.size(0)
+                out = model(imgs)
+                
+                # Calculate individual losses
+                dice_loss_val = criterion(out, masks)
+                ce_loss_val = ce_loss(out, masks)
+                
+                # For backwards compatibility, vloss is always pure Dice loss
+                vloss += dice_loss_val.item() * imgs.size(0)
+                vce += ce_loss_val.item() * imgs.size(0)
+                
+                # Track combined loss separately for DINOv2
+                if 'dinov2' in args.backbone:
+                    combined = 0.7 * ce_loss_val + 0.3 * dice_loss_val
+                    vcombined += combined.item() * imgs.size(0)
+                
                 n += imgs.size(0)
-        vloss /= n
+        
+        vloss /= n  # This remains pure Dice loss for compatibility
+        vce /= n
+        if 'dinov2' in args.backbone:
+            vcombined /= n
         
         # Log metrics to wandb
-        wandb.log({
+        log_dict = {
             "epoch": epoch,
             "train_loss": avg_train_loss,
-            "val_loss": vloss,
+            "val_loss": vloss,  # Pure Dice loss for backwards compatibility
+            "val_ce_loss": vce,
             "learning_rate": opt.param_groups[0]['lr']
-        })
+        }
         
-        print(f"Epoch {epoch:02d}: train_loss {avg_train_loss:.4f}, val_loss {vloss:.4f}")
+        # Add combined loss for DINOv2
+        if 'dinov2' in args.backbone:
+            log_dict["val_combined_loss"] = vcombined
+        
+        wandb.log(log_dict)
+        
+        # Print appropriate metrics based on model type
+        if 'dinov2' in args.backbone:
+            print(f"Epoch {epoch:02d}: train_loss {avg_train_loss:.4f}, val_loss {vloss:.4f} (combined: {vcombined:.4f}, ce: {vce:.4f})")
+        else:
+            print(f"Epoch {epoch:02d}: train_loss {avg_train_loss:.4f}, val_loss {vloss:.4f}")
         
         # Save best model with backbone-specific naming
         if vloss < best_val:

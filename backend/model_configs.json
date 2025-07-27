@@ -49,12 +49,28 @@
       "description": "ResNet-34 - faster training, smaller model"
     },
     "vit_base_patch14_dinov2": {
-      "lr": 5e-5,
-      "freeze_encoder_epochs": 3,
-      "batch_size": 12,
+      "lr": 1e-4,
+      "freeze_encoder_epochs": 8,
+      "batch_size": 32,
+      "weight_decay": 1e-4,
+      "default_epochs": 30,
+      "description": "DINOv2 ViT-Base - self-supervised vision transformer"
+    },
+    "vit_small_patch14_dinov2": {
+      "lr": 2e-4,
+      "freeze_encoder_epochs": 6,
+      "batch_size": 48,
       "weight_decay": 1e-4,
       "default_epochs": 25,
-      "description": "DINOv2 ViT-Base - self-supervised vision transformer"
+      "description": "DINOv2 ViT-Small - lighter self-supervised model"
+    },
+    "vit_large_patch14_dinov2": {
+      "lr": 5e-5,
+      "freeze_encoder_epochs": 10,
+      "batch_size": 16,
+      "weight_decay": 1e-4,
+      "default_epochs": 100,
+      "description": "DINOv2 ViT-Large - larger self-supervised model"
     }
   },
   "default_fallback": {
@@ -68,7 +84,7 @@
   "model_groups": {
     "EfficientNet Family": ["efficientnet-b3", "efficientnet-b5", "efficientnet-b7"],
     "ResNet Family": ["resnet34", "resnet50"],
-    "Vision Transformers": ["gigapath_vitl", "vit_base_patch14_dinov2"],
-    "All Models": ["gigapath_vitl", "efficientnet-b3", "efficientnet-b5", "efficientnet-b7", "resnet50", "resnet34", "vit_base_patch14_dinov2"]
+    "Vision Transformers": ["gigapath_vitl", "vit_small_patch14_dinov2", "vit_base_patch14_dinov2", "vit_large_patch14_dinov2"],
+    "All Models": ["gigapath_vitl", "efficientnet-b3", "efficientnet-b5", "efficientnet-b7", "resnet50", "resnet34", "vit_small_patch14_dinov2", "vit_base_patch14_dinov2", "vit_large_patch14_dinov2"]
   }
 }
