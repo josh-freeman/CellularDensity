@@ -102,6 +102,11 @@ class SkinSegmentationModel:
         
         self.backbone = backbone
         
+        # Auto-detect magnification from model name/path
+        self.magnification = self._detect_magnification(model_path, model_name)
+        if self.magnification != "unknown":
+            print(f"🔍 Detected model magnification: {self.magnification}")
+        
         # Get model path (download from HF if needed)
         if model_path is None and model_name is not None:
             model_path = self._download_from_hf(model_name)
@@ -149,6 +154,19 @@ class SkinSegmentationModel:
             print(f"⚠️  Could not auto-detect backbone from '{source}', using efficientnet-b3")
             return "efficientnet-b3"
     
+    def _detect_magnification(self, model_path: str = None, model_name: str = None) -> str:
+        """Auto-detect magnification from model name or path."""
+        source = model_name or model_path or ""
+        source = source.lower()
+        
+        # Check for magnification patterns
+        for mag in ["1x", "2x", "5x", "10x", "20x", "40x"]:
+            if mag in source:
+                return mag
+        
+        # Default if not found
+        return "unknown"
+    
     def _download_from_hf(self, model_name: str) -> str:
         """Download model from HuggingFace repository."""
         try:
@@ -177,16 +195,42 @@ class SkinSegmentationModel:
                         target_file = file
                         break
             
-            # Fallback to common names
+            # Fallback to common names (including magnification)
             if target_file is None:
+                # Check for magnification-specific models
+                magnification_patterns = ["1x", "2x", "5x", "10x", "20x", "40x"]
+                backbone_patterns = []
+                
                 if "efficientnet-b3" in model_name or "b3" in model_name:
-                    target_file = "efficientnet-b3_unet_best.pt"
+                    backbone_patterns = ["efficientnet-b3", "efficientnet_b3"]
                 elif "efficientnet-b5" in model_name or "b5" in model_name:
-                    target_file = "efficientnet-b5_unet_best.pt"
+                    backbone_patterns = ["efficientnet-b5", "efficientnet_b5"]
                 elif "gigapath" in model_name.lower():
-                    target_file = "gigapath_unet_best.pt"
-                else:
-                    target_file = model_files[0] if model_files else "efficientnet-b3_unet_best.pt"
+                    backbone_patterns = ["gigapath"]
+                
+                # Try to find magnification-specific model
+                for backbone in backbone_patterns:
+                    for mag in magnification_patterns:
+                        for file in model_files:
+                            if backbone in file and mag in file:
+                                target_file = file
+                                print(f"📎 Found magnification-specific model: {file}")
+                                break
+                        if target_file:
+                            break
+                    if target_file:
+                        break
+                
+                # Final fallback
+                if target_file is None:
+                    if "efficientnet-b3" in model_name or "b3" in model_name:
+                        target_file = "efficientnet-b3_unet_best.pt"
+                    elif "efficientnet-b5" in model_name or "b5" in model_name:
+                        target_file = "efficientnet-b5_unet_best.pt"
+                    elif "gigapath" in model_name.lower():
+                        target_file = "gigapath_unet_best.pt"
+                    else:
+                        target_file = model_files[0] if model_files else "efficientnet-b3_unet_best.pt"
             
             print(f"📥 Downloading {target_file} from JoshuaFreeman/skin_seg...")
             
@@ -659,11 +703,15 @@ Examples:
   python skin_seg_inference.py image.jpg --model_name efficientnet-b5
   python skin_seg_inference.py image.jpg --model_name gigapath
   
+  # Use magnification-specific models:
+  python skin_seg_inference.py image.jpg --model_name efficientnet-b3_10x --magnification 10x
+  python skin_seg_inference.py image.jpg --model_name efficientnet-b5_1x --magnification 1x
+  
   # Use local model file:
-  python skin_seg_inference.py image.jpg --model_path ./my_model.pt --backbone resnet50
+  python skin_seg_inference.py image.jpg --model_path ./efficientnet-b3_10x_unet_best.pt --backbone efficientnet-b3
   
   # Batch processing:
-  python skin_seg_inference.py /path/to/images/ --batch --model_name efficientnet-b5
+  python skin_seg_inference.py /path/to/images/ --batch --model_name efficientnet-b5_10x
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -671,9 +719,10 @@ Examples:
     parser.add_argument("input", help="Input image file or directory for batch processing")
     
     # Model specification options
-    parser.add_argument("--model_name", help="Model name from JoshuaFreeman/skin_seg (e.g., 'efficientnet-b3', 'efficientnet-b5', 'gigapath')")
+    parser.add_argument("--model_name", help="Model name from JoshuaFreeman/skin_seg (e.g., 'efficientnet-b3', 'efficientnet-b5', 'gigapath', 'efficientnet-b3_10x')")
     parser.add_argument("--model_path", help="Local path to model weights")
     parser.add_argument("--backbone", help="Backbone architecture (auto-detected if not provided)")
+    parser.add_argument("--magnification", help="Expected magnification of input images (e.g., '1x', '2x', '5x', '10x'). If not specified, will try to auto-detect from model name")
     
     # Processing options
     parser.add_argument("--output_dir", default="results", help="Output directory for results")
@@ -720,6 +769,15 @@ Examples:
             backbone=args.backbone, 
             device=args.device
         )
+    
+    # Show magnification warning if specified
+    if args.magnification:
+        print(f"⚠️  Input magnification specified as: {args.magnification}")
+        if model.magnification != "unknown" and model.magnification != args.magnification:
+            print(f"⚠️  WARNING: Model was trained on {model.magnification} data, but you specified {args.magnification}")
+            print(f"   Performance may be degraded when using different magnifications!")
+    elif model.magnification != "unknown":
+        print(f"ℹ️  Model trained on {model.magnification} data. For best results, use matching magnification.")
     
     # Process input
     if args.batch or os.path.isdir(args.input):

@@ -67,7 +67,7 @@ def create_wsi_processor(config: ProcessingConfig, tissue_filter_mode: TissueFil
     return processor
 
 
-def process_single_file(file_path: str, config: ProcessingConfig, tissue_filter_mode: TissueFilterMode = TissueFilterMode.NONE, segmentation_model=None) -> dict:
+def process_single_file(file_path: str, config: ProcessingConfig, tissue_filter_mode: TissueFilterMode = TissueFilterMode.NONE, segmentation_model=None, target_magnification: float = None) -> dict:
     """Process a single WSI file."""
     logger = logging.getLogger(__name__)
     logger.info(f"Processing single file: {file_path}")
@@ -85,7 +85,7 @@ def process_single_file(file_path: str, config: ProcessingConfig, tissue_filter_
         result = processor.process_slide(file_path, output_dir)
         
         # Extract tissue patches for segmentation at correct resolution
-        extract_and_segment_patches(file_path, output_dir, result)
+        extract_and_segment_patches(file_path, output_dir, result, target_magnification)
         
         logger.info(f"Successfully processed {file_path}")
         return result
@@ -96,32 +96,42 @@ def process_single_file(file_path: str, config: ProcessingConfig, tissue_filter_
             'error': str(e)
         }
 
-def extract_and_segment_patches(slide_path: str, output_dir: str, cell_results: dict):
-    """Extract tissue patches and run segmentation analysis."""
+def extract_and_segment_patches(slide_path: str, output_dir: str, cell_results: dict, target_magnification: float = None):
+    """Extract tissue patches and run segmentation analysis.
+    
+    Args:
+        slide_path: Path to the slide file
+        output_dir: Output directory for results
+        cell_results: Cell detection results
+        target_magnification: Target magnification for patch extraction (required)
+    """
     import openslide
     from PIL import Image
     import subprocess
     import json
     
     logger = logging.getLogger(__name__)
-    logger.info("Extracting tissue patches for segmentation analysis...")
+    
+    if target_magnification is None:
+        raise ValueError("target_magnification is required - must specify desired magnification (e.g., 1.0, 2.0, 5.0, 10.0)")
+    
+    logger.info(f"Extracting tissue patches for segmentation analysis at {target_magnification}x magnification...")
     
     try:
         # Open slide
         slide = openslide.OpenSlide(slide_path)
         
-        # Determine correct level for 10x equivalent
+        # Determine correct level for target magnification
         objective_power = float(slide.properties.get('openslide.objective-power', '40'))
-        target_magnification = 10.0
         target_level = 0
         
-        # Find level that gives 10x equivalent
+        # Find level that gives target magnification equivalent
         for level in range(slide.level_count):
             effective_mag = objective_power / slide.level_downsamples[level]
             if abs(effective_mag - target_magnification) < abs(objective_power / slide.level_downsamples[target_level] - target_magnification):
                 target_level = level
         
-        logger.info(f"Using level {target_level} for 10x equivalent magnification")
+        logger.info(f"Using level {target_level} for {target_magnification}x equivalent magnification")
         
         # Create patches directory
         patches_dir = os.path.join(output_dir, "segmentation_patches")
@@ -161,7 +171,7 @@ def extract_and_segment_patches(slide_path: str, output_dir: str, cell_results: 
                     white_ratio = np.sum(gray > 200) / (patch_size * patch_size)
                     
                     if white_ratio < 0.7:  # Good tissue content
-                        patch_filename = f"patch_{patches_extracted:03d}_10x_224px.png"
+                        patch_filename = f"patch_{patches_extracted:03d}_{int(target_magnification)}x_224px.png"
                         patch_path = os.path.join(patches_dir, patch_filename)
                         patch_rgb.save(patch_path)
                         
@@ -284,7 +294,7 @@ def create_segmentation_mosaic(segmentation_dir: str, output_dir: str, num_patch
         logger.error(f"Error creating segmentation mosaic: {e}")
 
 
-def process_directory(config: ProcessingConfig, tissue_filter_mode: TissueFilterMode = TissueFilterMode.NONE, segmentation_model=None) -> List[dict]:
+def process_directory(config: ProcessingConfig, tissue_filter_mode: TissueFilterMode = TissueFilterMode.NONE, segmentation_model=None, target_magnification: float = None) -> List[dict]:
     """Process all files in a directory."""
     logger = logging.getLogger(__name__)
     logger.info(f"Processing directory: {config.input_dir}")
@@ -299,6 +309,10 @@ def process_directory(config: ProcessingConfig, tissue_filter_mode: TissueFilter
         config.output_dir,
         config.file_pattern
     )
+    
+    # Note: For batch processing, we'd need to modify BatchProcessor to handle magnification
+    # For now, this maintains existing behavior
+    logger.warning("Batch processing with custom magnification not yet fully implemented")
     
     return results
 
@@ -333,6 +347,10 @@ def main():
                        help='Tissue filtering mode for cell counting')
     parser.add_argument('--segmentation-model', type=str,
                        help='Path to segmentation model or HuggingFace model name')
+    
+    # Magnification options
+    parser.add_argument('--magnification', type=float, required=True,
+                       help='Target magnification for patch extraction (e.g., 1.0, 2.0, 5.0, 10.0)')
     
     # Logging options
     parser.add_argument('--log-level', type=str, default='INFO',
@@ -399,7 +417,7 @@ def main():
             sys.exit(1)
         
         # Process single file
-        result = process_single_file(args.input_file, config, tissue_filter_mode, segmentation_model)
+        result = process_single_file(args.input_file, config, tissue_filter_mode, segmentation_model, args.magnification)
         results = [result]
         
     elif config.input_dir:
@@ -408,7 +426,7 @@ def main():
             sys.exit(1)
         
         # Process directory
-        results = process_directory(config, tissue_filter_mode, segmentation_model)
+        results = process_directory(config, tissue_filter_mode, segmentation_model, args.magnification)
         
     else:
         logger.error("Must specify either --input-file or --input-dir")
