@@ -846,45 +846,12 @@ class SkinSegmentationModel:
                 raise
                 
         elif 'dinov2' in self.backbone:
-            # Use custom DINOv2 implementation (same as training)
+            # Use shared DINOv2 implementation (same as training)
             try:
-                import timm
-                class DINOv2Seg(torch.nn.Module):
-                    def __init__(self, model_name="vit_base_patch14_dinov2", n_classes=12, pretrained=False):
-                        super().__init__()
-                        self.backbone = timm.create_model(
-                            model_name,
-                            pretrained=pretrained,
-                            num_classes=0,
-                            img_size=224
-                        )
-                        
-                        self.patch_h = self.patch_w = self.backbone.patch_embed.patch_size[0]
-                        C = self.backbone.embed_dim
-                        
-                        self.decoder = torch.nn.Sequential(
-                            torch.nn.ConvTranspose2d(C, 512, 2, stride=2), torch.nn.GELU(),
-                            torch.nn.ConvTranspose2d(512, 256, 2, stride=2), torch.nn.GELU(),
-                            torch.nn.ConvTranspose2d(256, 128, 2, stride=2), torch.nn.GELU(),
-                            torch.nn.Conv2d(128, n_classes, 1)
-                        )
-                    
-                    def forward(self, x):
-                        B, _, H, W = x.shape
-                        tokens = self.backbone.forward_features(x)  # B, N+1, C
-                        tokens = tokens[:, 1:, :]  # drop CLS
-                        
-                        h = H // self.patch_h
-                        w = W // self.patch_w
-                        feat = tokens.transpose(1, 2).reshape(B, -1, h, w)  # B, C, h, w
-                        
-                        mask = self.decoder(feat)
-                        return torch.nn.functional.interpolate(
-                            mask, size=(H, W), mode="bilinear", align_corners=False
-                        )
+                from models.dinov2 import DINOv2Seg
                 
                 model = DINOv2Seg(model_name=self.backbone, n_classes=12, pretrained=False)
-                print(f"✅ Created custom DINOv2 model")
+                print(f"✅ Created shared DINOv2 model")
                 
             except Exception as e:
                 print(f"❌ Error creating DINOv2 model: {e}")
