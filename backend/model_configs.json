@@ -65,12 +65,22 @@
       "description": "DINOv2 ViT-Small - lighter self-supervised model"
     },
     "vit_large_patch14_dinov2": {
-      "lr": 5e-5,
-      "freeze_encoder_epochs": 10,
+      "lr": 1e-4,
+      "freeze_encoder_epochs": 5,
       "batch_size": 16,
       "weight_decay": 1e-4,
-      "default_epochs": 100,
+      "default_epochs": 40,
+      "gradient_accumulation_steps": 2,
       "description": "DINOv2 ViT-Large - larger self-supervised model"
+    },
+    "vit_giant_patch14_dinov2": {
+      "lr": 8e-5,
+      "freeze_encoder_epochs": 5,
+      "batch_size": 8,
+      "weight_decay": 1e-4,
+      "default_epochs": 50,
+      "gradient_accumulation_steps": 4,
+      "description": "DINOv2 ViT-Giant - largest self-supervised model"
     }
   },
   "default_fallback": {

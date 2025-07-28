@@ -97,7 +97,7 @@ class GigaPathSeg(nn.Module):
 class DINOv2Seg(nn.Module):
     def __init__(self, model_name="vit_base_patch14_dinov2", n_classes=12, pretrained=True):
         super().__init__()
-        # Create DINOv2 model with flexible input size
+        # Create DINOv2 model
         self.backbone = timm.create_model(
             model_name,
             pretrained=pretrained,
@@ -108,49 +108,209 @@ class DINOv2Seg(nn.Module):
         # Get patch size and embedding dimension
         self.patch_h = self.patch_w = self.backbone.patch_embed.patch_size[0]
         C = self.backbone.embed_dim
-
-        # Linear decoder head similar to Facebook's implementation
-        # Using a simpler design that works better with DINOv2 features
-        self.head = nn.Sequential(
-            nn.Conv2d(C, 256, kernel_size=1),
+        
+        # Determine which layers to extract features from
+        if 'small' in model_name:
+            self.layer_indices = [2, 5, 8, 11]  # 12 layers total
+        elif 'base' in model_name:
+            self.layer_indices = [2, 5, 8, 11]  # 12 layers total
+        elif 'large' in model_name:
+            self.layer_indices = [5, 11, 17, 23]  # 24 layers total
+        elif 'giant' in model_name:
+            self.layer_indices = [9, 19, 29, 39]  # 40 layers total
+        else:
+            self.layer_indices = [2, 5, 8, 11]  # Default
+        
+        # Multi-scale feature fusion with FPN-like architecture
+        self.lateral_convs = nn.ModuleList()
+        self.fpn_convs = nn.ModuleList()
+        fusion_dim = 256
+        
+        for _ in self.layer_indices:
+            # Lateral connections to reduce channel dimensions
+            self.lateral_convs.append(
+                nn.Sequential(
+                    nn.Conv2d(C, fusion_dim, kernel_size=1),
+                    nn.BatchNorm2d(fusion_dim),
+                    nn.ReLU(inplace=True)
+                )
+            )
+            # FPN convolutions for feature refinement
+            self.fpn_convs.append(
+                nn.Sequential(
+                    nn.Conv2d(fusion_dim, fusion_dim, kernel_size=3, padding=1),
+                    nn.BatchNorm2d(fusion_dim),
+                    nn.ReLU(inplace=True)
+                )
+            )
+        
+        # Sophisticated decoder head with ASPP-like module
+        self.decoder = nn.Sequential(
+            # ASPP-style multi-scale processing
+            ASPPModule(fusion_dim * len(self.layer_indices), 512),
+            nn.Conv2d(512, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.1),
+            nn.Dropout2d(0.1),
             nn.Conv2d(256, n_classes, kernel_size=1)
         )
         
         # Initialize decoder weights
-        for m in self.head.modules():
+        self._init_weights()
+        
+        # Register hooks to extract intermediate features
+        self.intermediate_features = []
+        self._register_hooks()
+
+    def _init_weights(self):
+        for m in self.decoder.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.xavier_uniform_(m.weight)
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def _register_hooks(self):
+        def hook_fn(module, input, output):
+            self.intermediate_features.append(output)
+        
+        # Register hooks on specified transformer blocks
+        for idx in self.layer_indices:
+            self.backbone.blocks[idx].register_forward_hook(hook_fn)
 
     def forward(self, x):
         B, _, H, W = x.shape
         
-        # Extract features using DINOv2 backbone
-        features = self.backbone.forward_features(x)  # B, N+1, C
+        # Clear previous features
+        self.intermediate_features = []
         
-        # Remove CLS token and reshape to 2D feature map
-        features = features[:, 1:, :]  # B, N, C
+        # Forward pass through backbone (this will trigger hooks)
+        _ = self.backbone.forward_features(x)
         
-        # Calculate spatial dimensions
-        h = H // self.patch_h
-        w = W // self.patch_w
+        # Process intermediate features with FPN
+        laterals = []
+        for i, (feat, lateral_conv, fpn_conv) in enumerate(zip(
+            self.intermediate_features, self.lateral_convs, self.fpn_convs
+        )):
+            # Each feature is still in sequence format (B, N+1, C)
+            # Remove CLS token and reshape to 2D
+            feat = feat[:, 1:, :]  # B, N, C
+            
+            # Calculate spatial dimensions
+            h = H // self.patch_h
+            w = W // self.patch_w
+            
+            # Reshape to spatial feature map
+            feat = feat.transpose(1, 2).reshape(B, -1, h, w)  # B, C, h, w
+            
+            # Apply lateral connection
+            lateral = lateral_conv(feat)
+            
+            # Add top-down connection for FPN (except for the first level)
+            if i > 0:
+                # Upsample previous level and add
+                prev_shape = lateral.shape[2:]
+                top_down = nn.functional.interpolate(
+                    laterals[-1], size=prev_shape, mode='nearest'
+                )
+                lateral = lateral + top_down
+            
+            # Apply FPN convolution
+            lateral = fpn_conv(lateral)
+            laterals.append(lateral)
         
-        # Reshape to spatial feature map
-        features = features.transpose(1, 2).reshape(B, -1, h, w)  # B, C, h, w
+        # Resize all features to the same scale (largest feature map size)
+        target_size = laterals[0].shape[2:]
+        aligned_features = []
+        for lateral in laterals:
+            if lateral.shape[2:] != target_size:
+                lateral = nn.functional.interpolate(
+                    lateral, size=target_size, mode='bilinear', align_corners=False
+                )
+            aligned_features.append(lateral)
         
-        # Apply segmentation head
-        masks = self.head(features)
+        # Concatenate multi-scale features
+        fused_features = torch.cat(aligned_features, dim=1)
+        
+        # Apply decoder
+        masks = self.decoder(fused_features)
         
         # Upsample to original resolution
         masks = nn.functional.interpolate(
-            masks, size=(H, W), mode="bilinear", align_corners=False
+            masks, size=(H, W), mode='bilinear', align_corners=False
         )
         
         return masks
+
+
+class ASPPModule(nn.Module):
+    """Atrous Spatial Pyramid Pooling module for multi-scale context aggregation."""
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        
+        # Multiple parallel convolutions with different dilation rates
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels // 4, kernel_size=1),
+            nn.BatchNorm2d(out_channels // 4),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels // 4, kernel_size=3, padding=3, dilation=3),
+            nn.BatchNorm2d(out_channels // 4),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels // 4, kernel_size=3, padding=6, dilation=6),
+            nn.BatchNorm2d(out_channels // 4),
+            nn.ReLU(inplace=True)
+        )
+        
+        self.conv4 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels // 4, kernel_size=3, padding=12, dilation=12),
+            nn.BatchNorm2d(out_channels // 4),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Global average pooling branch
+        self.gap = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, out_channels // 4, kernel_size=1),
+            nn.BatchNorm2d(out_channels // 4),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Final fusion convolution
+        self.fusion = nn.Sequential(
+            nn.Conv2d(out_channels + out_channels // 4, out_channels, kernel_size=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(0.1)
+        )
+    
+    def forward(self, x):
+        size = x.shape[2:]
+        
+        # Apply parallel convolutions
+        feat1 = self.conv1(x)
+        feat2 = self.conv2(x)
+        feat3 = self.conv3(x)
+        feat4 = self.conv4(x)
+        
+        # Global context
+        feat5 = self.gap(x)
+        feat5 = nn.functional.interpolate(feat5, size=size, mode='bilinear', align_corners=False)
+        
+        # Concatenate all features
+        out = torch.cat([feat1, feat2, feat3, feat4, feat5], dim=1)
+        
+        # Final fusion
+        out = self.fusion(out)
+        
+        return out
 
 
 # --------------------- Dataset ----------------------------
@@ -434,6 +594,9 @@ def train(args):
     # Apply model-specific defaults if not explicitly set by user
     model_defaults = get_model_defaults(args.backbone)
     
+    # Get gradient accumulation steps from model defaults
+    gradient_accumulation_steps = model_defaults.get("gradient_accumulation_steps", 1)
+    
     # Override defaults only if user didn't specify
     if not hasattr(args, '_lr_set'):
         args.lr = model_defaults["lr"]
@@ -506,6 +669,8 @@ def train(args):
         config={
             "epochs": args.epochs,
             "batch_size": args.bs,
+            "effective_batch_size": args.bs * gradient_accumulation_steps,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
             "learning_rate": args.lr,
             "freeze_encoder_epochs": args.freeze_encoder_epochs,
             "n_classes": args.n_classes,
@@ -643,6 +808,9 @@ def train(args):
         epoch_loss = 0
         num_batches = 0
         
+        # Zero gradients at the start of epoch
+        opt.zero_grad()
+        
         for batch_idx, (imgs, masks) in enumerate(train_dl):
             imgs, masks = imgs.to(args.device), masks.to(args.device)
             
@@ -651,26 +819,28 @@ def train(args):
                 print(f"🎯 Batch {batch_idx}: imgs.device = {imgs.device}, masks.device = {masks.device}")
                 print(f"🎯 Batch shape: imgs={imgs.shape}, masks={masks.shape}")
             
-            opt.zero_grad()
             out = model(imgs)
             
-            # For DINOv2, use CrossEntropy as primary loss with Dice as auxiliary
+            # For DINOv2, use pure CrossEntropy loss like Facebook's implementation
             if 'dinov2' in args.backbone:
-                ce = ce_loss(out, masks)
-                dice = criterion(out, masks)
-                loss = 0.7 * ce + 0.3 * dice  # Weighted more towards CE
+                loss = ce_loss(out, masks)
             else:
                 loss = criterion(out, masks)
             
+            # Scale loss by gradient accumulation steps
+            loss = loss / gradient_accumulation_steps
             loss.backward()
             
-            # Gradient clipping for stability with ViT models
-            if 'dinov2' in args.backbone or 'gigapath' in args.backbone:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # Step optimizer every gradient_accumulation_steps batches
+            if (batch_idx + 1) % gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_dl):
+                # Gradient clipping for stability with ViT models
+                if 'dinov2' in args.backbone or 'gigapath' in args.backbone:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                opt.step()
+                opt.zero_grad()
             
-            opt.step()
-            
-            epoch_loss += loss.item()
+            epoch_loss += loss.item() * gradient_accumulation_steps  # Unscale for logging
             num_batches += 1
         
         avg_train_loss = epoch_loss / max(num_batches, 1)  # Avoid division by zero
@@ -696,52 +866,48 @@ def train(args):
 
         # Validation
         model.eval()
-        vloss, vce, vcombined, n = 0, 0, 0, 0
+        vloss, vce, n = 0, 0, 0
         with torch.no_grad():
             for imgs, masks in val_dl:
                 imgs, masks = imgs.to(args.device), masks.to(args.device)
                 out = model(imgs)
                 
-                # Calculate individual losses
-                dice_loss_val = criterion(out, masks)
-                ce_loss_val = ce_loss(out, masks)
-                
-                # For backwards compatibility, vloss is always pure Dice loss
-                vloss += dice_loss_val.item() * imgs.size(0)
-                vce += ce_loss_val.item() * imgs.size(0)
-                
-                # Track combined loss separately for DINOv2
+                # Calculate losses
                 if 'dinov2' in args.backbone:
-                    combined = 0.7 * ce_loss_val + 0.3 * dice_loss_val
-                    vcombined += combined.item() * imgs.size(0)
+                    # For DINOv2, primary metric is CE loss
+                    ce_loss_val = ce_loss(out, masks)
+                    dice_loss_val = criterion(out, masks)
+                    vloss += ce_loss_val.item() * imgs.size(0)  # Track CE as primary
+                    vce += ce_loss_val.item() * imgs.size(0)
+                else:
+                    # For other models, primary metric is Dice loss
+                    dice_loss_val = criterion(out, masks)
+                    ce_loss_val = ce_loss(out, masks)
+                    vloss += dice_loss_val.item() * imgs.size(0)  # Track Dice as primary
+                    vce += ce_loss_val.item() * imgs.size(0)
                 
                 n += imgs.size(0)
         
-        vloss /= n  # This remains pure Dice loss for compatibility
+        vloss /= n
         vce /= n
-        if 'dinov2' in args.backbone:
-            vcombined /= n
         
         # Log metrics to wandb
         log_dict = {
             "epoch": epoch,
             "train_loss": avg_train_loss,
-            "val_loss": vloss,  # Pure Dice loss for backwards compatibility
+            "val_loss": vloss,  # Primary metric (CE for DINOv2, Dice for others)
             "val_ce_loss": vce,
+            "val_dice_loss": vloss if not 'dinov2' in args.backbone else None,
             "learning_rate": opt.param_groups[0]['lr']
         }
-        
-        # Add combined loss for DINOv2
-        if 'dinov2' in args.backbone:
-            log_dict["val_combined_loss"] = vcombined
         
         wandb.log(log_dict)
         
         # Print appropriate metrics based on model type
         if 'dinov2' in args.backbone:
-            print(f"Epoch {epoch:02d}: train_loss {avg_train_loss:.4f}, val_loss {vloss:.4f} (combined: {vcombined:.4f}, ce: {vce:.4f})")
+            print(f"Epoch {epoch:02d}: train_loss {avg_train_loss:.4f}, val_ce_loss {vloss:.4f}")
         else:
-            print(f"Epoch {epoch:02d}: train_loss {avg_train_loss:.4f}, val_loss {vloss:.4f}")
+            print(f"Epoch {epoch:02d}: train_loss {avg_train_loss:.4f}, val_dice_loss {vloss:.4f}")
         
         # Save best model with backbone-specific naming
         if vloss < best_val:
