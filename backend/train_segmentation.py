@@ -597,7 +597,7 @@ def train(args):
         
         # Zero gradients at the start of epoch
         opt.zero_grad()
-        
+
         for batch_idx, (imgs, masks) in enumerate(train_dl):
             imgs, masks = imgs.to(args.device), masks.to(args.device)
             
@@ -606,6 +606,8 @@ def train(args):
                 print(f"🎯 Batch {batch_idx}: imgs.device = {imgs.device}, masks.device = {masks.device}")
                 print(f"🎯 Batch shape: imgs={imgs.shape}, masks={masks.shape}")
             
+
+            opt.zero_grad()
             out = model(imgs)
             
             # For DINOv2, use pure CrossEntropy loss like Facebook's implementation

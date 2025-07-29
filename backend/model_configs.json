@@ -96,5 +96,6 @@
     "ResNet Family": ["resnet34", "resnet50"],
     "Vision Transformers": ["gigapath_vitl", "vit_small_patch14_dinov2", "vit_base_patch14_dinov2", "vit_large_patch14_dinov2"],
     "All Models": ["gigapath_vitl", "efficientnet-b3", "efficientnet-b5", "efficientnet-b7", "resnet50", "resnet34", "vit_small_patch14_dinov2", "vit_base_patch14_dinov2", "vit_large_patch14_dinov2"]
+
   }
 }
