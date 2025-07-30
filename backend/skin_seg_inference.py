@@ -20,6 +20,10 @@ Key Features:
 - Experimental connected component voting for nuclei overlay
 
 Usage Examples:
+    # Run without model (all non-background treated as tissue):
+    python skin_seg_inference.py image.jpg
+    python skin_seg_inference.py slide.ndpi
+    
     # List available models:
     python skin_seg_inference.py --list_models
     
@@ -34,6 +38,7 @@ Usage Examples:
     
     # Batch processing:
     python skin_seg_inference.py /path/to/images/ --batch --model_name efficientnet-b3_10x
+    python skin_seg_inference.py /path/to/images/ --batch  # No model
     
     # WSI processing with custom neighborhood size:
     python skin_seg_inference.py slide.ndpi --model_name efficientnet-b3_10x --neighborhood_size 5
@@ -195,7 +200,7 @@ def process_one_tile_with_segmentation(
     scale_x: float,
     scale_y: float,
     min_coverage_fraction: float,
-    model: 'SkinSegmentationModel',
+    model: Optional['SkinSegmentationModel'] = None,
     skip_nuclei: bool = False,
     neighborhood_size: int = NEIGHBORHOOD_SIZE
 ) -> dict:
@@ -239,14 +244,27 @@ def process_one_tile_with_segmentation(
         (current_tile_w, current_tile_h)
     ).convert("RGB")
     
-    # Resize to 224x224 for model prediction
-    tile_pil = region.resize((224, 224))
-    
-    # Run segmentation inference
-    pred_mask, confidence_map = model.predict(tile_pil)
-    
     # Create visualization overlay
     tile_img = np.array(region)
+    
+    # If no model provided, handle differently
+    if model is None:
+        # No segmentation model - all non-background tiles are of interest
+        if is_background_tile:
+            # Background tiles: create dummy mask (all background)
+            pred_mask = np.full((current_tile_h, current_tile_w), 8, dtype=np.uint8)  # Class 8 is BKG
+            confidence_map = np.ones((current_tile_h, current_tile_w), dtype=np.float32)
+        else:
+            # Non-background tiles: treat as skin tissue (epidermis)
+            pred_mask = np.full((current_tile_h, current_tile_w), 6, dtype=np.uint8)  # Class 6 is EPI
+            confidence_map = np.ones((current_tile_h, current_tile_w), dtype=np.float32)
+        pred_mask_resized = pred_mask
+    else:
+        # Resize to 224x224 for model prediction
+        tile_pil = region.resize((224, 224))
+        
+        # Run segmentation inference
+        pred_mask, confidence_map = model.predict(tile_pil)
     
     # Run nuclei detection on original resolution tile (unless skipped for speed or background tile)
     if not skip_nuclei and not is_background_tile:
@@ -258,14 +276,15 @@ def process_one_tile_with_segmentation(
         total_nuclei_count = 0
         nuclei_mask = np.zeros(tile_img.shape[:2], dtype=np.uint8)
     
-    # Resize segmentation mask back to original tile size
-    if tile_img.shape[:2] != (224, 224):
-        from PIL import Image as PILImage
-        pred_mask_resized = np.array(PILImage.fromarray(pred_mask.astype(np.uint8)).resize(
-            (current_tile_w, current_tile_h), PILImage.Resampling.NEAREST
-        ))
-    else:
-        pred_mask_resized = pred_mask
+    # Resize segmentation mask back to original tile size (if using model)
+    if model is not None:
+        if tile_img.shape[:2] != (224, 224):
+            from PIL import Image as PILImage
+            pred_mask_resized = np.array(PILImage.fromarray(pred_mask.astype(np.uint8)).resize(
+                (current_tile_w, current_tile_h), PILImage.Resampling.NEAREST
+            ))
+        else:
+            pred_mask_resized = pred_mask
     
     # DEBUG: Check what classes are actually predicted
     unique_classes = np.unique(pred_mask_resized)
@@ -361,7 +380,7 @@ def process_wsi_contours_with_segmentation(
     tile_size: int,
     min_coverage_fraction: float,
     output_dir: str,
-    model: 'SkinSegmentationModel',
+    model: Optional['SkinSegmentationModel'] = None,
     neighborhood_size: int = NEIGHBORHOOD_SIZE
 ) -> Dict[str, float]:
     """
@@ -521,7 +540,7 @@ def process_wsi_contours_with_segmentation(
 
 def process_wsi_with_tiles(
     image_path: str,
-    model: 'SkinSegmentationModel',
+    model: Optional['SkinSegmentationModel'] = None,
     tile_size: int = 224,
     target_magnification: str = "10x",
     output_dir: str = "results",
@@ -1104,7 +1123,7 @@ Confidence: {confidence_map.mean():.3f}
 
 def process_single_image(
     image_path: str,
-    model: SkinSegmentationModel,
+    model: Optional[SkinSegmentationModel] = None,
     output_dir: str = "results",
     visualize: bool = True,
     neighborhood_size: int = NEIGHBORHOOD_SIZE
@@ -1116,10 +1135,14 @@ def process_single_image(
         print(f"🔬 Detected whole slide image format: {image_path}")
         
         # Get target magnification from model or default to 10x
-        target_magnification = getattr(model, 'magnification', '10x')
-        if target_magnification == "unknown":
+        if model is not None:
+            target_magnification = getattr(model, 'magnification', '10x')
+            if target_magnification == "unknown":
+                target_magnification = "10x"
+                print(f"⚠️  Model magnification unknown, defaulting to {target_magnification}")
+        else:
             target_magnification = "10x"
-            print(f"⚠️  Model magnification unknown, defaulting to {target_magnification}")
+            print(f"ℹ️  No model provided, using default magnification {target_magnification}")
         
         # Process WSI with tiles using proper infrastructure
         stats = process_wsi_with_tiles(
@@ -1145,8 +1168,15 @@ def process_single_image(
             print(f"❌ Error loading image {image_path}: {e}")
             return {}
         
-        # Predict
-        pred_mask, confidence_map = model.predict(image)
+        # Predict or use default if no model
+        if model is not None:
+            pred_mask, confidence_map = model.predict(image)
+        else:
+            # No model - treat entire image as epidermis (class 6)
+            w, h = image.size
+            pred_mask = np.full((h, w), 6, dtype=np.uint8)
+            confidence_map = np.ones((h, w), dtype=np.float32)
+            print(f"ℹ️  No model provided, treating entire image as skin tissue")
         
         # Calculate statistics
         stats = calculate_tissue_stats(pred_mask)
@@ -1170,7 +1200,7 @@ def process_single_image(
 
 def process_batch(
     input_dir: str,
-    model: SkinSegmentationModel,
+    model: Optional[SkinSegmentationModel] = None,
     output_dir: str = "results",
     visualize: bool = True,
     neighborhood_size: int = NEIGHBORHOOD_SIZE,
@@ -1234,6 +1264,10 @@ def main():
         description="Skin Histopathology Segmentation Inference",
         epilog="""
 Examples:
+  # Run without model (all non-background crops treated as tissue):
+  python skin_seg_inference.py image.jpg
+  python skin_seg_inference.py slide.ndpi
+  
   # Use any model from HuggingFace JoshuaFreeman/skin_seg:
   python skin_seg_inference.py image.jpg --model_name efficientnet-b3_10x
   python skin_seg_inference.py image.jpg --model_name efficientnet-b5
@@ -1249,6 +1283,7 @@ Examples:
   
   # Batch processing:
   python skin_seg_inference.py /path/to/images/ --batch --model_name efficientnet-b3_10x
+  python skin_seg_inference.py /path/to/images/ --batch  # No model
   
   # WSI with custom neighborhood size:
   python skin_seg_inference.py slide.ndpi --model_name efficientnet-b3_10x --neighborhood_size 5
@@ -1292,37 +1327,38 @@ Examples:
         return
     
     # Validate arguments
-    if not args.model_path and not args.model_name:
-        # Default to efficientnet-b3_10x if nothing specified
-        args.model_name = "efficientnet-b3_10x"
-        print("💡 No model specified, defaulting to efficientnet-b3_10x")
-    
-    # Initialize model
-    if args.model_name:
-        print(f"🚀 Initializing model from HuggingFace: {args.model_name}")
-        model = SkinSegmentationModel(
-            model_name=args.model_name, 
-            backbone=args.backbone, 
-            device=args.device,
-            requested_magnification=args.magnification
-        )
+    model = None
+    if args.model_path or args.model_name:
+        # Initialize model
+        if args.model_name:
+            print(f"🚀 Initializing model from HuggingFace: {args.model_name}")
+            model = SkinSegmentationModel(
+                model_name=args.model_name, 
+                backbone=args.backbone, 
+                device=args.device,
+                requested_magnification=args.magnification
+            )
+        else:
+            print(f"🚀 Initializing model from local file: {args.model_path}")
+            model = SkinSegmentationModel(
+                model_path=args.model_path, 
+                backbone=args.backbone, 
+                device=args.device,
+                requested_magnification=args.magnification
+            )
     else:
-        print(f"🚀 Initializing model from local file: {args.model_path}")
-        model = SkinSegmentationModel(
-            model_path=args.model_path, 
-            backbone=args.backbone, 
-            device=args.device,
-            requested_magnification=args.magnification
-        )
+        print("ℹ️  No model specified. Running without segmentation model.")
+        print("   All non-background crops will be treated as tissue of interest.")
     
     # Show magnification warning if specified
-    if args.magnification:
-        print(f"⚠️  Input magnification specified as: {args.magnification}")
-        if model.magnification != "unknown" and model.magnification != args.magnification:
-            print(f"⚠️  WARNING: Model was trained on {model.magnification} data, but you specified {args.magnification}")
-            print(f"   Performance may be degraded when using different magnifications!")
-    elif model.magnification != "unknown":
-        print(f"ℹ️  Model trained on {model.magnification} data. For best results, use matching magnification.")
+    if model is not None:
+        if args.magnification:
+            print(f"⚠️  Input magnification specified as: {args.magnification}")
+            if model.magnification != "unknown" and model.magnification != args.magnification:
+                print(f"⚠️  WARNING: Model was trained on {model.magnification} data, but you specified {args.magnification}")
+                print(f"   Performance may be degraded when using different magnifications!")
+        elif model.magnification != "unknown":
+            print(f"ℹ️  Model trained on {model.magnification} data. For best results, use matching magnification.")
     
     # Process input
     if args.batch or os.path.isdir(args.input):
