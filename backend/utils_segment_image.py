@@ -10,7 +10,7 @@ from constants import (
     ALPHA_OVERLAY,
     RPB_THRESHOLD_PERCENTILE,
     GRABCUT_ITERATIONS, 
-    NEIGHBORHOOD_SIZE, 
+    NEIGHBORHOOD_SIZE,
     CORRECTION
 )
 
@@ -264,4 +264,4 @@ def otsu_threshold(histogram: np.ndarray) -> float:
             threshold = t
     percentile_threshold = (threshold / 255) * 100
     return percentile_threshold
-            
+
