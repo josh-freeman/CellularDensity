@@ -18,15 +18,20 @@ from constants import (
     TILE_SIZE,
     TOP_BIGGEST_CONTOURS_TO_OBSERVE,
     CONTOUR_LEVEL,
-    MIN_FRACTION_OF_TILE_INSIDE_CONTOUR
+    MIN_FRACTION_OF_TILE_INSIDE_CONTOUR,
+    INPUT_TILES_PATH
 )
 
 from utils_segment_whole_slide import (
     get_saved_contours,
     get_top_biggest_contours,
     tile_and_save_contours,
-
+    find_hovernet_bkg_mask_png,
+    load_hovernet_nuclei_index,
+    load_hovernet_background_mask_png
 )
+
+
 def process_image_segmentation_request(file: io.BytesIO) -> dict:
     """
     High-level function that takes in the image file and microns per pixel,
@@ -69,7 +74,8 @@ def process_ndpi_segmentation_request(
     top_biggest_contours_to_observe=TOP_BIGGEST_CONTOURS_TO_OBSERVE,
     tile_size=TILE_SIZE,
     min_fraction_of_tile_inside_contour=MIN_FRACTION_OF_TILE_INSIDE_CONTOUR,
-    output_tiles_path=None
+    output_tiles_path=None,
+    hovernet_json_path=None  # Add this parameter
 ):
     """
     Process an OpenSlide object to:
@@ -89,7 +95,15 @@ def process_ndpi_segmentation_request(
                                   The minimum fraction of a tile that must overlap
                                   with the contour to be saved
     :param output_tiles_path:     Where to write output images/tiles (if not None)
+    :param hovernet_json_path:    Path to HoVerNet JSON file (optional)
     """
+    hovernet_nuclei_index = None
+    if hovernet_json_path:
+        logging.info(f"Using HoVerNet nuclei detection from: {hovernet_json_path}")
+        hovernet_nuclei_index = load_hovernet_nuclei_index(hovernet_json_path)
+        logging.info(f"Loaded {len(hovernet_nuclei_index)} nuclei from HoVerNet JSON")
+    else:
+        logging.info("Using traditional adaptive thresholding for nuclei detection")
 
     # If the slide is closed, reopen it
     if slide._osr is None and ndpi_file is not None:
@@ -102,9 +116,10 @@ def process_ndpi_segmentation_request(
     # Get contours from the array
     saved_contours = get_saved_contours(level_array)
     
+    logging.info(f"Found {len(saved_contours)} contours")
+    
     # Create overlay image to visualize contours
     overlay_image = level_array.copy()
-      # example fallback
 
     # Draw the contours on the overlay image
     for contour in saved_contours:
@@ -121,12 +136,37 @@ def process_ndpi_segmentation_request(
         logging.info(f"Overlay image with contours saved to: {overlay_image_path}")
 
     # Create tissue/non-tissue mask
-    mask_background = get_background_mask(level_array)      # 255 = background, 0 = tissue
-    tissue_mask = cv2.bitwise_not(mask_background)          # invert: 255 = tissue, 0 = background
+    #mask_background = get_background_mask(level_array)      # 255 = background, 0 = tissue
+    #tissue_mask = cv2.bitwise_not(mask_background)          # invert: 255 = tissue, 0 = background
+    # Create tissue/non-tissue mask
+    # Prefer HoVerNet background mask PNG if it exists next to the NDPI, otherwise fall back.
+    hovernet_bkg_png = find_hovernet_bkg_mask_png(INPUT_TILES_PATH, ndpi_file)  # ndpi_file is the file path
+    if hovernet_bkg_png:
+        logging.info(f"Using HoVerNet background mask PNG: {hovernet_bkg_png}")
+        mask_background = load_hovernet_background_mask_png(
+            hovernet_bkg_png,
+            target_wh=(level_array.shape[1], level_array.shape[0])  # (W,H)
+        )
+
+        # IMPORTANT: decide whether the PNG means "background=255" or "tissue=255"
+        # If the PNG is a *tissue mask* (tissue=255), invert it:
+        mask_background = cv2.bitwise_not(mask_background)
+
+    else:
+        logging.info("No HoVerNet background mask PNG found -> using GrabCut background mask")
+        mask_background = get_background_mask(level_array)  # 255 = background, 0 = tissue
+
+    tissue_mask = cv2.bitwise_not(mask_background)          # 255 = tissue, 0 = background
 
     # Optionally, regenerate or update contours (for example, if you need only the top largest ones)
     saved_contours = get_saved_contours(level_array)
     saved_contours = get_top_biggest_contours(saved_contours, top_n=top_biggest_contours_to_observe)
+
+    # Log whether using HoVerNet or traditional method
+    if hovernet_json_path:
+        logging.info(f"Using HoVerNet nuclei detection from: {hovernet_json_path}")
+    else:
+        logging.info("Using traditional adaptive thresholding for nuclei detection")
 
     # Tile and save contours
     result = tile_and_save_contours(
@@ -139,6 +179,7 @@ def process_ndpi_segmentation_request(
         downsample_factor=slide.level_downsamples[contour_level],
         tile_size=tile_size,
         min_coverage_fraction=min_fraction_of_tile_inside_contour,
-        output_dir=output_tiles_path
+        output_dir=output_tiles_path,
+         hovernet_nuclei_index=hovernet_nuclei_index,
     )
     return result

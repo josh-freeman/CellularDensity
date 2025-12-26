@@ -11,16 +11,128 @@ from utils_segment_image import (
     get_background_mask
 )
 from constants import (
+    KERNEL_SIZE,
     TOP_BIGGEST_CONTOURS_TO_OBSERVE
 )
 import openslide
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import json
+import numpy as np
+import cv2
+import os
+import glob
+import cv2
+import numpy as np
+import logging
+
+def find_hovernet_bkg_mask_png(input_dir: str, ndpi_filename: str) -> str | None:
+    """
+    Looks for a PNG mask matching the NDPI base name, e.g.
+      <base>.png
+    or, if not found, tries <base>*.png
+    """
+    base = os.path.splitext(os.path.basename(ndpi_filename))[0]
+    exact = os.path.join(input_dir, base + ".png")
+    if os.path.exists(exact):
+        return exact
+
+    hits = glob.glob(os.path.join(input_dir, base + "*.png"))
+    return hits[0] if hits else None
+
+
+def load_hovernet_background_mask_png(mask_png_path: str, target_wh: tuple[int, int]) -> np.ndarray:
+    """
+    Loads a PNG mask and resizes it to match the contour level image size.
+
+    Returns a uint8 mask with values 0/255.
+    """
+    m = cv2.imread(mask_png_path, cv2.IMREAD_GRAYSCALE)
+    if m is None:
+        raise ValueError(f"Could not read mask PNG: {mask_png_path}")
+
+    # resize to (W,H) of level_array
+    target_w, target_h = target_wh
+    if (m.shape[1], m.shape[0]) != (target_w, target_h):
+        m = cv2.resize(m, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+
+    # binarize to 0/255
+    m = (m > 0).astype(np.uint8) * 255
+    return m
+
+def load_hovernet_nuclei_index(json_path: str):
+    """
+    Loads HoVerNet JSON and returns a list of nuclei entries:
+      [(minx, miny, maxx, maxy, contour_np), ...]
+    Assumes contours are in level-0 (slide) coordinates (x,y).
+    """
+    with open(json_path, "r") as f:
+        data = json.load(f)
+
+    nuc = data.get("nuc", {})
+    nuclei_index = []
+
+    for _, obj in nuc.items():
+        contour = obj.get("contour", None)
+        if not contour:
+            continue
+
+        # contour is list of [x,y] in slide coords
+        c = np.asarray(contour, dtype=np.int32).reshape((-1, 1, 2))
+
+        xs = c[:, 0, 0]
+        ys = c[:, 0, 1]
+        minx, maxx = int(xs.min()), int(xs.max())
+        miny, maxy = int(ys.min()), int(ys.max())
+
+        nuclei_index.append((minx, miny, maxx, maxy, c))
+
+    return nuclei_index
+
+
+def nuclei_mask_from_hovernet_for_tile(
+    nuclei_index,
+    tile_start_x: int,
+    tile_start_y: int,
+    tile_w: int,
+    tile_h: int
+):
+    """
+    Builds a binary mask (uint8) for this tile (255 where nucleus pixels are),
+    and returns (n_nuclei_in_tile, mask).
+    """
+    x1 = tile_start_x
+    y1 = tile_start_y
+    x2 = tile_start_x + tile_w
+    y2 = tile_start_y + tile_h
+
+    mask = np.zeros((tile_h, tile_w), dtype=np.uint8)
+    count = 0
+
+    # bbox overlap filter first (fast)
+    for (minx, miny, maxx, maxy, contour_abs) in nuclei_index:
+        if maxx < x1 or minx >= x2 or maxy < y1 or miny >= y2:
+            continue
+
+        # shift contour to tile-local coords
+        contour_local = contour_abs.copy()
+        contour_local[:, 0, 0] -= x1
+        contour_local[:, 0, 1] -= y1
+
+        # Optional safety clamp (prevents weird huge negatives)
+        contour_local[:, 0, 0] = np.clip(contour_local[:, 0, 0], -tile_w, 2 * tile_w)
+        contour_local[:, 0, 1] = np.clip(contour_local[:, 0, 1], -tile_h, 2 * tile_h)
+
+        cv2.drawContours(mask, [contour_local], -1, 255, thickness=-1)
+        count += 1
+
+    return count, mask
+
 
 def get_saved_contours(level_array):    
     mask_background = get_background_mask(level_array)
 
     # Apply a kernel to smoothen the mask
-    kernel = np.ones((3, 3), np.uint8)
+    kernel = np.ones(KERNEL_SIZE, np.uint8)
     smoothed_mask = cv2.morphologyEx(mask_background, cv2.MORPH_CLOSE, kernel)
 
     # Invert the smoothed mask
@@ -30,7 +142,6 @@ def get_saved_contours(level_array):
     contours, _ = cv2.findContours(inverted_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     return contours
-
 
 def prepare_tile_info(
     x0: int, y0: int,
@@ -95,7 +206,8 @@ def process_one_tile(
     mask_background: np.ndarray,  # 255 = macro-level background, 0 = tissue
     scale_x: float,
     scale_y: float,
-    min_coverage_fraction: float,
+    min_coverage_fraction: float, 
+    hovernet_nuclei_index=None,
 ) -> dict:
     """
     Process a single tile given in tile_info. Returns a dictionary with:
@@ -158,12 +270,20 @@ def process_one_tile(
         # Color background in blue
         tile_img[bkg_slice_resized == 255] = (0, 0, 255)  # RGB
 
-    # 2) Detect nuclei in tile, overlay them in green
-    gray_tile = cv2.cvtColor(tile_img, cv2.COLOR_RGB2GRAY)
-    total_cells, nuclei_mask = compute_nuclei_mask_and_count(tile_img, gray_tile)
+    # 2) Nuclei mask: either HoVerNet JSON or traditional method
+    if hovernet_nuclei_index is not None:
+        total_cells, nuclei_mask = nuclei_mask_from_hovernet_for_tile(
+            hovernet_nuclei_index,
+            tile_start_x, tile_start_y,
+            current_tile_w, current_tile_h
+        )
+    else:
+        gray_tile = cv2.cvtColor(tile_img, cv2.COLOR_RGB2GRAY)
+        total_cells, nuclei_mask = compute_nuclei_mask_and_count(tile_img, gray_tile)
 
-    # Overwrite tile pixels where nuclei_mask==255 with green
+    # Overlay nuclei in green
     tile_img[nuclei_mask == 255] = (0, 255, 0)
+
 
     return {
         "row_idx": row_idx,
@@ -222,9 +342,10 @@ def tile_and_save_contours(
     mpp_y: float,
     saved_contours,
     downsample_factor: float,
-    tile_size: int = 512,
+    tile_size: int,
     min_coverage_fraction: float = 0.5,
-    output_dir: str | None = None
+    output_dir: str | None = None, 
+    hovernet_nuclei_index=None,
 ):
     """
     For each polygon contour in `saved_contours` (level-8 coords), do:
@@ -284,7 +405,8 @@ def tile_and_save_contours(
                     mask_background,
                     scale_x,
                     scale_y,
-                    min_coverage_fraction,
+                    min_coverage_fraction, 
+                    hovernet_nuclei_index=hovernet_nuclei_index,
                 )
                 for tile_info in tile_info_list
             ]
